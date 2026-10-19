@@ -38,12 +38,13 @@ class TestDockerfileOrder:
         df = _dockerfile()
         assert df.index("chown -R appuser:appuser /app") < df.index("USER appuser")
 
-    def test_entrypoint_chmod_before_user_switch(self) -> None:
-        """chmod كـ appuser على ملف root = فشل بناء."""
+    def test_entrypoint_does_not_need_exec_bit(self) -> None:
+        """الاستدعاء عبر `sh` فلا نحتاج chmod — أخطاء الصلاحيات ت.aspect构建 تفشل."""
         df = _dockerfile()
-        chmod_idx = df.index("chmod +x /app/scripts/entrypoint.sh")
-        user_idx = df.index("USER appuser")
-        assert chmod_idx < user_idx, "chmod must run before USER appuser"
+        assert 'CMD ["sh", "scripts/entrypoint.sh"]' in df
+        assert "chmod +x /app/scripts/entrypoint.sh" not in df, (
+            "chmod on a root-owned file after USER breaks the build"
+        )
 
     def test_requirements_copied_before_pip_install(self) -> None:
         df = _dockerfile()

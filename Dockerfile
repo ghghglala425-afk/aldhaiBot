@@ -43,9 +43,6 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # ---- الكود ----
 COPY . .
 
-# ---- نقطة الدخول (قبل تبديل المستخدم: chmod يحتاج صلاحيات root) ----
-RUN chmod +x /app/scripts/entrypoint.sh
-
 # ---- مستخدم غير جذر ----
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
@@ -57,4 +54,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://localhost:${PORT:-8000}/health || exit 1
 
 # نقطة الدخول الموحّدة — البوت هو الافتراضي (APP_ROLE=api للـ API)
+# نستدعيها عبر sh فلا نحتاج صلاحية تنفيذ على الملف
 CMD ["sh", "scripts/entrypoint.sh"]

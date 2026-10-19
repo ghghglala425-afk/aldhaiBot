@@ -303,9 +303,14 @@ def _start_health_server(port: int) -> None:
 
     البوت في وضع Polling لا يستمع على أي منفذ، وبلا هذا الخادم تعتبر
     Railway الخدمة غير سليمة (Connection refused) فتعيد تشغيلها في حلقة.
+
+    يبدأ **قبل** أي عمل على قاعدة البيانات حتى لا يتأخر فحص الصحة
+    بسبب انتظار الاتصال بالـ Postgres.
     """
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    state = {"ready": False, "role": "bot"}
 
     class _HealthHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -323,7 +328,12 @@ def _start_health_server(port: int) -> None:
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path in ("/health", "/healthz"):
-                self._reply(200, b'{"status":"ok","service":"bot"}')
+                # 200 حتى أثناء التهيئة — Railway يطلب خدمة سليمة لا خدمة مكتملة
+                body = (
+                    '{"status":"ok","service":"%s","ready":%s}'
+                    % (state["role"], "true" if state["ready"] else "false")
+                ).encode()
+                self._reply(200, body)
             else:
                 self._reply(404, b'{"error":"not found"}')
 
@@ -337,6 +347,7 @@ def _start_health_server(port: int) -> None:
         log.info("خادم الفحص الصحي يعمل على المنفذ %s", port)
     except OSError as e:
         log.warning("تعذّر تشغيل خادم الفحص الصحي على %s: %s", port, e)
+    return state
 
 
 def _run() -> None:
@@ -351,12 +362,21 @@ def _run() -> None:
 
     _detect_platform()
 
-    asyncio.run(init_db())
-    app = build_application()
-
-    # خادم الفحص الصحي (يلزم في Railway حيث لا يوجد Polling listener)
+    # خادم الفحص الصحي **قبل** أي عمل على قاعدة البيانات:
+    # اتصال Postgres قد يتأخر (إعادة محاولة) فيفشل فحص صحة Railway.
+    health_state = None
     if os.environ.get("PORT", "").strip().isdigit():
-        _start_health_server(settings.WEBHOOK_PORT)
+        health_state = _start_health_server(settings.WEBHOOK_PORT)
+
+    try:
+        asyncio.run(init_db())
+    except Exception as e:  # noqa: BLE001
+        log.error("تعذّر تهيئة قاعدة البيانات: %s", e)
+        if health_state is None:
+            raise
+        # نكمل التشغيل: خادم الفحص الصحي يعمل والبوت يمكنه العمل
+
+    app = build_application()
 
     try:
         if settings.BOT_MODE == "webhook" and settings.WEBHOOK_URL:
