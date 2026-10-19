@@ -63,6 +63,22 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://cyber:cyber@db:5432/cyberbot"
     REDIS_URL: str = "redis://cache:6379/0"
 
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def _normalize_db_url(cls, v: str) -> str:
+        """يضيف مشغّل asyncpg عند الحاجة.
+
+        Railway/Neon/Supabase يحقنون DATABASE_URL بصيغة `postgresql://` بلا مشغّل،
+        بينما SQLAlchemy async يتطلب `postgresql+asyncpg://`.
+        """
+        if not v:
+            return v
+        if v.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + v[len("postgresql://"):]
+        if v.startswith("postgres://"):
+            return "postgresql+asyncpg://" + v[len("postgres://"):]
+        return v
+
     # Security
     SECRET_KEY: str = "change-me"
     ACCESS_TOKEN_TTL_MIN: int = 10080

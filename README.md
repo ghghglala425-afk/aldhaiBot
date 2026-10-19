@@ -57,6 +57,33 @@
 
 ---
 
+## 🚂 النشر على Railway (10 دقائق — موصى به)
+
+أسرع طريقة لتشغيل البوت **24/7 في السحابة**: HTTPS ونطاق عام تلقائيا، بلا SSH وبلا خادم.
+
+```bash
+# 1) سجّل في railway.app (بـ GitHub، مجاني 30 يوم بدون كرت ائتمان)
+# 2) New Project → Deploy from GitHub repo → ghghglala425-afk/aldhaiBot
+# 3) أضف PostgreSQL (زر واحد) → يحقن DATABASE_URL تلقائيا
+# 4) أضف المتغيرات: BOT_TOKEN · GEMINI_API_KEY · ADMIN_IDS · AI_FREE_MODE=1
+# 5) Redeploy → البوت يعمل خلال دقيقة
+```
+
+**التفاصيل الكاملة:** [DEPLOY_RAILWAY.md](DEPLOY_RAILWAY.md)
+
+| الخطة | التكلفة | الرصيد |
+|---|---|---|
+| Trial (30 يوم) | **$0** | $5 لمرة واحدة، بدون كرت ائتمان |
+| Free | $0 | $1/شهر (الخدمة تتوقف بعد ~6 أيام) |
+| **Hobby** | **$5/شهر** | $5 مشمول — الخيار المستقر |
+
+> `railway.json` و `railway.api.json` جاهزان، و `core/config.py` يضيف `+asyncpg`
+> تلقائيا إلى `DATABASE_URL` الذي يحقنه Railway.
+
+**النشر على خادمك الخاص (Oracle/GCP/VPS):** [DEPLOY_ORACLE.md](DEPLOY_ORACLE.md)
+
+---
+
 ## ⚡ التشغيل السريع: البوت فقط (بلا Docker، بموديل محلي)
 
 المسار الأسرع للتجربة على ويندوز. يحتاج **Python 3.12**، و**LM Studio** (اختياري لكنه مطلوب لتوليد المحتوى والمساعد الذكي).

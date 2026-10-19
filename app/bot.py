@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from telegram import BotCommand, Update
 from telegram.ext import (
@@ -161,6 +162,26 @@ def build_application() -> Application:
     return app
 
 
+def _detect_platform() -> None:
+    """تعديل إعدادات المضيف (Railway / PaaS) قبل الإقلاع.
+
+    Railway يحقن تلقائيا:
+      - PORT                  → المنفذ الذي يجب الاستماع عليه
+      - RAILWAY_PUBLIC_DOMAIN → النطاق العام للخدمة (لـ webhook و Mini App)
+    """
+    port = os.environ.get("PORT", "").strip()
+    if port.isdigit():
+        settings.WEBHOOK_PORT = int(port)
+        log.info("اكتُشف منفذ المضيف PORT=%s", port)
+
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if domain:
+        settings.WEBHOOK_URL = f"https://{domain}"
+        settings.WEBHOOK_PATH = settings.WEBHOOK_PATH or "/webhook"
+        settings.MINIAPP_URL = settings.MINIAPP_URL or f"https://{domain}"
+        log.info("اكتُشف نطاق Railway: %s", domain)
+
+
 def _run() -> None:
     errors = settings.check_required()
     if errors:
@@ -170,6 +191,8 @@ def _run() -> None:
         raise SystemExit(1)
     for w in settings.check_warnings():
         log.warning("تحذير — %s", w)
+
+    _detect_platform()
 
     asyncio.run(init_db())
     app = build_application()
