@@ -9,6 +9,21 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def normalize_db_url(url: str) -> str:
+    """يضيف مشغّل asyncpg إلى روابط PostgreSQL التي لا تحمل مشغّلا.
+
+    Railway/Neon/Supabase يحقنون `postgresql://user:pass@host/db` بلا مشغّل،
+    بينما SQLAlchemy async يتطلب `postgresql+asyncpg://...`.
+    """
+    if not url:
+        return url
+    if url.startswith("postgresql://"):
+        return "postgresql+asyncpg://" + url[len("postgresql://"):]
+    if url.startswith("postgres://"):
+        return "postgresql+asyncpg://" + url[len("postgres://"):]
+    return url
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
@@ -71,13 +86,7 @@ class Settings(BaseSettings):
         Railway/Neon/Supabase يحقنون DATABASE_URL بصيغة `postgresql://` بلا مشغّل،
         بينما SQLAlchemy async يتطلب `postgresql+asyncpg://`.
         """
-        if not v:
-            return v
-        if v.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + v[len("postgresql://"):]
-        if v.startswith("postgres://"):
-            return "postgresql+asyncpg://" + v[len("postgres://"):]
-        return v
+        return normalize_db_url(v)
 
     # Security
     SECRET_KEY: str = "change-me"

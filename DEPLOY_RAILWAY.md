@@ -30,12 +30,43 @@
 ## الخطوة 2 — إضافة قاعدة البيانات (30 ثانية)
 
 1. في المشروع: **+ New** → **Database** → **PostgreSQL**.
-2. Railway يحقن تلقائيا المتغير `DATABASE_URL` في كل خدمة ✅
+2. Railway يحقن تلقائيا المتغير `DATABASE_URL` **في كل خدمة** ✅
    (الكود يضيف `+asyncpg` تلقائيا — انظر `core/config.py`).
 
-> 💡 **بديل مجاني:** احذف PostgreSQL واستخدم SQLite على Railway Volume
-> (أرخص، وكافٍ لآلاف المستخدمين). اربط المتغير يدويا:
-> `DATABASE_URL=sqlite+aiosqlite:///./data/app.db` + Volume على `/app/data`.
+> ⚠️ **مهم:** المتغير المحقون يظهر في **Variables خدمة Postgres** فقط.
+> انسخه إلى **Variables خدمة البوت** و **Variables خدمة الـ API**:
+> - إما مرجع: `DATABASE_URL = ${{Postgres.DATABASE_URL}}`
+> - أو انسخ الرابط الفعلي كاملا.
+
+### 💾 الـ Volume (لحفظ البيانات مع SQLite)
+
+إذا لم تفعّل PostgreSQL، استخدم **Volume** على المسار `/app/data`:
+- خدمة البوت → **+ New** → **Volume** → Mount Path: `/app/data`
+- ثم في Variables: `DATABASE_URL=sqlite+aiosqlite:///./data/app.db`
+
+> بدون Volume، أي إعادة نشر على Railway **تفقد البيانات** (نظام الملفات مؤقت).
+
+---
+
+## 🛟 إذا ظهر خطأ: `socket.gaierror: Name or service not known`
+
+هذا يعني أن `DATABASE_URL` يشير إلى **مضيف غير موجود**:
+
+| السبب | الحل |
+|---|---|
+| المتغير غير مضبوط في الخدمة | أضف `DATABASE_URL` إلى Variables الخدمة |
+| مرجع غير محلول (`${{Postgres...}}` حرفي) | تأكد أن اسم الخدمة **دقيق** (`Postgres` كما في Railway) |
+| مضيف `db` (اسم Compose) | غيّره إلى مضيف Postgres الحقيقي |
+
+> ✅ **الكود لم يعد ينهار بسبب هذا الخطأ** — يتحوّل تلقائيا إلى SQLite ويشتغل.
+> راقبLogs لترى: `مضيف قاعدة البيانات ... التحويل إلى SQLite`.
+> لكن Postgres أفضل للبيانات المشتركة بين البوت والـ API.
+
+### 🔍 للتأكد من القاعدة المستعملة فعليا
+```
+GET https://<your-service>.up.railway.app/health
+→ {"status":"ok","database":"postgresql","database_host":"postgres.railway.internal",...}
+```
 
 ---
 
@@ -175,12 +206,14 @@ railway up
 
 | المشكلة | الحل |
 |---|---|
+| `socket.gaierror: Name or service not known` | `DATABASE_URL` يشير لمضيف غير موجود — انظر قسم «🛟» أعلاه (الكود الآن يتحول لـ SQLite بدل الانهيار) |
 | `The asyncio extension requires an async driver` | ✅ مُصلَح — `core/config.py` يضيف `+asyncpg` تلقائيا |
-| `Conflict: terminated by other getUpdates` | Ensure `Num Replicas = 1`، وأوقف أي نسخة محلية |
+| `Conflict: terminated by other getUpdates` | تأكد `Num Replicas = 1`، وأوقف أي نسخة محلية |
 | `Application failed to start` | راجع Logs — غالبا `BOT_TOKEN` أو `GEMINI_API_KEY` ناقص |
 | `429 Too Many Requests` | نفدت حصة Gemini — انتظر الغد أو أضف مفتاح Groq |
 | `AI غير مضبوط` | `AI_FREE_MODE=1` + `GEMINI_API_KEY` في Variables |
 | البوت لا يستجيب بعد Deploy | Railway يعيد التشغيل — انتظر 30 ثانية، وتأكد من Logs |
+| البيانات تختفي بعد كل نشر | أضف **Volume** على `/app/data` أو استخدم PostgreSQL |
 
 ---
 

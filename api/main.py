@@ -59,11 +59,26 @@ app.include_router(miniapp.router)
 
 @app.get("/health", tags=["system"])
 async def health():
+    from core.db import _DATABASE_URL
+
+    if _DATABASE_URL.startswith("sqlite"):
+        db_kind = "sqlite"
+        db_host = _DATABASE_URL.split(":///", 1)[-1] or "memory"
+    else:
+        db_kind = "postgresql"
+        # نُخفي كلمة المرور في التقرير
+        db_host = ""
+        try:
+            db_host = _DATABASE_URL.split("@", 1)[-1].split(":", 1)[0]
+        except Exception:  # noqa: BLE001
+            pass
     return {
         "status": "ok",
         "env": settings.ENV,
         "bot_configured": bool(settings.BOT_TOKEN),
         "ai_configured": settings.ai_configured,
+        "database": db_kind,
+        "database_host": db_host,
     }
 
 

@@ -1,10 +1,21 @@
 # -*- coding: utf-8 -*-
-"""طبقة قاعدة البيانات (SQLAlchemy async + asyncpg، مع دعم SQLite للتشغيل بدون Docker)."""
+"""طبقة قاعدة البيانات (SQLAlchemy async + asyncpg، مع دعم SQLite للتشغيل بدون Docker).
+
+المرونة:
+- إذا لم يُضبط `DATABASE_URL` صراحةً → SQLite محلي (بلا خادم قاعدة).
+- إذا كان الرابط يشير إلى مرجع Railway غير مُحلّ (${{...}}) → SQLite.
+- إعادة محاولة الاتصال (الـ DB قد لا يكون جاهزا بعد الإقلاع).
+- في حال تعذّر DNS على PostgreSQL → رجوع تلقائي إلى SQLite بدل الانهيار المتكرر.
+"""
 from __future__ import annotations
 
+import asyncio
+import os
+import socket
 from pathlib import Path
 from typing import AsyncIterator
 
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -12,11 +23,18 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
-from core.config import settings
+from core.config import normalize_db_url, settings
 from core.logging import get_logger
 from core.models import Base
 
 log = get_logger("core.db")
+
+# مسار SQLite الاحتياطي (يُستعمل على Railway Volume أو محليا)
+SQLITE_FALLBACK = "sqlite+aiosqlite:///./data/app.db"
+
+# كم مرة نحاول الاتصال قبل إعطاء الأمل
+CONNECT_ATTEMPTS = 6
+CONNECT_BACKOFF = 2.0
 
 
 def _is_sqlite(url: str) -> bool:
@@ -25,6 +43,88 @@ def _is_sqlite(url: str) -> bool:
 
 def _is_memory_sqlite(url: str) -> bool:
     return ":memory:" in url
+
+
+def _has_unresolved_reference(url: str) -> bool:
+    """Railway قد يبقي `${{Service.VAR}}` كسلسلة حرفية إذا لم يجد الخدمة."""
+    return "${{" in url or "{{" in url
+
+
+def _url_host(url: str) -> str:
+    """يستخرج اسم المضيف من رابط قاعدة البيانات."""
+    try:
+        rest = url.split("://", 1)[1]
+        rest = rest.split("@", 1)[-1]
+        return rest.split(":", 1)[0].split("/", 1)[0]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _is_private_service_host(host: str) -> bool:
+    """مضيف خدمة داخلية (Railway/Nomad) — لا يُفحص بال DNS محليا.
+
+    `postgres.railway.internal` لا يُحلّ خارج شبكة Railway، لكن يُحلّ داخلها.
+    فحصه بالـ DNS محليا يعني تدهوراAlways إلى SQLite.
+    """
+    return host.endswith(".internal") or host.endswith(".railway.internal")
+
+
+def choose_database_url(raw: str | None) -> tuple[str, str]:
+    """يقرّر رابط قاعدة البيانات النهائي ويعيد (الرابط، سبب الاختيار).
+
+    دوال خالصة — بلا حالة عامة — حتى يسهل اختبارها.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return SQLITE_FALLBACK, "unset"
+    if _has_unresolved_reference(value):
+        return SQLITE_FALLBACK, "unresolved-reference"
+    normalized = normalize_db_url(value)
+    if _is_sqlite(normalized):
+        return normalized, "sqlite"
+    host = _url_host(normalized)
+    if host and not _is_private_service_host(host) and not _host_resolvable(host):
+        return SQLITE_FALLBACK, f"unresolvable-host:{host}"
+    return normalized, "postgres"
+
+
+def resolve_database_url() -> str:
+    """يقرّر رابط قاعدة البيانات الفعلي حسب بيئة التشغيل."""
+    url, reason = choose_database_url(os.environ.get("DATABASE_URL"))
+    if reason == "unset":
+        log.warning(
+            "DATABASE_URL غير مضبوط — سيتم استعمال SQLite المحلي (%s). "
+            "لاستعمال PostgreSQL اضبط DATABASE_URL في Variables.",
+            url,
+        )
+    elif reason == "unresolved-reference":
+        log.warning(
+            "DATABASE_URL يحتوي مرجعا غير محلول — سيتم استعمال SQLite (%s).",
+            url,
+        )
+    elif reason.startswith("unresolvable-host"):
+        log.error(
+            "مضيف قاعدة البيانات غير قابل للحل (DNS) — التحويل إلى SQLite بدل الانهيار. "
+            "اضبط DATABASE_URL في Railway Variables (مثال: ${{Postgres.DATABASE_URL}})."
+        )
+    return url
+
+
+def _host_resolvable(host: str) -> bool:
+    """يفحص إن كان اسم المضيف قابلا للحل (DNS).
+
+    على Railway قد يشير `DATABASE_URL` إلى مضيف غير موجود (مثل `db` وهو اسم
+    خدمة Docker Compose) فينتج `socket.gaierror: Name or service not known`.
+    """
+    if not host:
+        return False
+    try:
+        socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+        return True
+    except socket.gaierror:
+        return False
+    except OSError:
+        return False
 
 
 def _ensure_sqlite_dir(url: str) -> None:
@@ -50,7 +150,29 @@ def _engine_kwargs(url: str) -> dict:
     return {"pool_pre_ping": True, "pool_size": 10, "max_overflow": 20}
 
 
-_DATABASE_URL = settings.DATABASE_URL
+class _SessionMakerProxy:
+    """وكيل لـ async_sessionmaker يسمح بتبديل المحرّك أثناء التشغيل.
+
+    ضروري لأن بقية الوحدات تستورد `SessionLocal` مباشرة
+    (`from core.db import SessionLocal`) — فالوكيل يبقى صالحا بعد التبديل.
+    """
+
+    __slots__ = ("_maker",)
+
+    def __init__(self, maker) -> None:
+        object.__setattr__(self, "_maker", maker)
+
+    def _set(self, maker) -> None:
+        object.__setattr__(self, "_maker", maker)
+
+    def __call__(self, *args, **kwargs):
+        return object.__getattribute__(self, "_maker")(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_maker"), name)
+
+
+_DATABASE_URL = resolve_database_url()
 _ensure_sqlite_dir(_DATABASE_URL)
 
 engine = create_async_engine(_DATABASE_URL, echo=False, **_engine_kwargs(_DATABASE_URL))
@@ -71,16 +193,64 @@ if _is_sqlite(_DATABASE_URL) and not _is_memory_sqlite(_DATABASE_URL):
         finally:
             cur.close()
 
-SessionLocal = async_sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
+SessionLocal = _SessionMakerProxy(
+    async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 )
+
+
+async def _connect_with_retry() -> None:
+    """يتصل بالقاعدة مع إعادة محاولة (الخدمة قد لا تكون جاهزة بعد الإقلاع)."""
+    last: Exception | None = None
+    for attempt in range(1, CONNECT_ATTEMPTS + 1):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            log.info("تمت تهيئة قاعدة البيانات.")
+            return
+        except (OperationalError, DBAPIError) as e:
+            last = e
+            if attempt >= CONNECT_ATTEMPTS:
+                break
+            wait = CONNECT_BACKOFF * attempt
+            log.warning(
+                "تعذّر الاتصال بقاعدة البيانات (%s/%s): %s — إعادة المحاولة خلال %ss",
+                attempt, CONNECT_ATTEMPTS, e.__class__.__name__, wait,
+            )
+            await asyncio.sleep(wait)
+    raise last if last else RuntimeError("تعذّر الاتصال بقاعدة البيانات")
+
+
+async def _fallback_to_sqlite(reason: str) -> None:
+    """ينتقل إلى SQLite عندما يتعذّر الوصول إلى PostgreSQL (مضيف غير معروف)."""
+    global engine, _DATABASE_URL
+    log.error(
+        "تعذّر الوصول إلى PostgreSQL (%s) — التحويل إلى SQLite المحلي. "
+        "تأكد من ضبط DATABASE_URL في Railway Variables.",
+        reason,
+    )
+    await engine.dispose()
+    _DATABASE_URL = SQLITE_FALLBACK
+    _ensure_sqlite_dir(_DATABASE_URL)
+    engine = create_async_engine(_DATABASE_URL, echo=False, **_engine_kwargs(_DATABASE_URL))
+    SessionLocal._set(
+        async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    )
+    log.warning("تم التحويل إلى SQLite: %s", _DATABASE_URL)
 
 
 async def init_db() -> None:
     """إنشاء الجداول إن لم تكن موجودة (آمن ومتكرر بلا أثر جانبي)."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    log.info("تمت تهيئة قاعدة البيانات.")
+    try:
+        await _connect_with_retry()
+        return
+    except Exception as e:  # noqa: BLE001
+        if _is_sqlite(_DATABASE_URL):
+            raise
+        # خطأ DNS/شبكة غالبا = إعداد خاطئ للمضيف
+        await _fallback_to_sqlite(str(e))
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        log.info("تمت تهيئة قاعدة البيانات (SQLite الاحتياطية).")
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
