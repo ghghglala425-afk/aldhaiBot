@@ -213,6 +213,8 @@ async def _connect_with_retry() -> None:
         try:
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+                # توسيع الجداول الموجودة بأعمدة ناقصة (لا يفعلها create_all)
+                await _apply_column_migrations(conn)
             log.info("تمت تهيئة قاعدة البيانات.")
             return
         except (OperationalError, DBAPIError) as e:
@@ -246,8 +248,43 @@ async def _fallback_to_sqlite(reason: str) -> None:
     log.warning("تم التحويل إلى SQLite: %s", _DATABASE_URL)
 
 
+async def _apply_column_migrations(conn) -> None:
+    """يضيف الأعمدة الناقصة إلى الجداول الموجودة.
+
+    `create_all()` لا يضيف أعمدة جديدة لجدول قائم — والقاعدة على Railway
+    استُعملت من قبل، فيجب توسيع جدول `lessons` يدويا.
+    """
+    from sqlalchemy import inspect, text
+
+    def _existing_columns(sync_conn, table: str) -> set[str]:
+        insp = inspect(sync_conn)
+        if table not in insp.get_table_names():
+            return set()
+        return {c["name"] for c in insp.get_columns(table)}
+
+    # (الجدول، العمود، تعريفه في SQL)
+    wanted = [
+        ("lessons", "key_points", "JSON"),
+        ("lessons", "memory_hook", "TEXT"),
+        ("lessons", "prerequisites", "JSON"),
+        ("lessons", "further_reading", "JSON"),
+        ("lessons", "est_reading_minutes", "INTEGER DEFAULT 0"),
+    ]
+
+    for table, column, ddl in wanted:
+        try:
+            existing = await conn.run_sync(_existing_columns, table)
+            if not existing or column in existing:
+                # الجدول غير موجود (سيُنشأ بـ create_all) أو العمود موجود
+                continue
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+            log.info("أُضيف العمود %s.%s", table, column)
+        except Exception as e:  # noqa: BLE001
+            log.debug("تعذّر إضافة العمود %s.%s: %s", table, column, e)
+
+
 async def init_db() -> None:
-    """إنشاء الجداول إن لم تكن موجودة (آمن ومتكرر بلا أثر جانبي)."""
+    """إنشاء/تحديث الجداول (آمن ومتكرر بلا أثر جانبي)."""
     try:
         await _connect_with_retry()
         return

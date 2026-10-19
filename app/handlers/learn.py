@@ -7,6 +7,7 @@ from telegram.constants import ParseMode
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from sqlalchemy import select
 
+from app import lesson_view as lv
 from app.keyboards import courses_kb
 from app.pagination import clamp_page, nav_row, slice_page, total_pages
 from core.db import SessionLocal
@@ -118,6 +119,42 @@ async def _send_chunks(message, chunks: list[str]) -> None:
         await message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
+async def _send_html_chunks(message, text: str, limit: int = 3800) -> None:
+    """يقسّم نص HTML طويل إلى رسائل آمنة."""
+    if not text:
+        return
+    buf = ""
+    for line in text.splitlines(keepends=True):
+        if len(buf) + len(line) > limit:
+            await message.reply_text(buf[:limit], parse_mode=ParseMode.HTML,
+                                     disable_web_page_preview=True)
+            buf = ""
+        buf += line
+    if buf.strip():
+        await message.reply_text(buf[:limit], parse_mode=ParseMode.HTML,
+                                 disable_web_page_preview=True)
+
+
+async def _send_code_blocks(message, codes: list[CodeSample]) -> None:
+    """يعرض الأكواد بترويسة ملوّنة لكل كتلة."""
+    total = len(codes)
+    for i, c in enumerate(codes, start=1):
+        block = lv.render_code_block(c.code, c.language or "", i, total, c.title)
+        await _send_html_chunks(message, block)
+        if c.explanation:
+            await message.reply_text(
+                f"💬 <i>{lv.esc(c.explanation)}</i>",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        if c.expected_output:
+            await message.reply_text(
+                f"📤 <b>الخرج المتوقع:</b>\n<pre>{lv.esc(c.expected_output)}</pre>",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+
+
 def _code_chunks(title: str, codes: list[CodeSample]) -> list[str]:
     """يجمع الأكواد في رسائل بحجم آمن مع إبرازها."""
     header = f"💻 *أكواد الدرس ({len(codes)})* — {title}\n"
@@ -144,6 +181,10 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     lesson_id = int(q.data.split(":")[1])
     is_outline = False
     assets: list[LessonAsset] = []
+    progress_pct = None
+    lesson_no = None
+    total_lessons = None
+    next_title = ""
     async with SessionLocal() as s:
         lesson = await s.get(Lesson, lesson_id)
         if not lesson:
@@ -154,7 +195,8 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await q.edit_message_text("سجّل دخولك أولا عبر /start.")
             return
         # التحقق من فتح الدرس (الفتح المتسلسل)
-        from core.learning import is_unlocked
+        from core.learning import is_unlocked, ordered_lessons
+
         if not await is_unlocked(s, user, lesson):
             await q.edit_message_text(
                 "🔒 هذا الدرس مقفل. يجب إكمال الدرس السابق أولاً.",
@@ -177,27 +219,96 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             await jobs.enqueue_lesson(s, lesson_id)
 
-    header = (
-        f"📖 *{lesson.title}*\n\n"
-        f"{(lesson.summary or '')}\n"
+        # ---------- رقم الدرس + التقدم + الدرس التالي ----------
+        try:
+            stage = await s.get(Stage, lesson.stage_id)
+            if stage:
+                siblings = await ordered_lessons(s, stage.course_id)
+                ids = [x.id for x in siblings]
+                if lesson_id in ids:
+                    idx = ids.index(lesson_id)
+                    lesson_no = idx + 1
+                    total_lessons = len(ids)
+                    if idx + 1 < len(ids):
+                        nxt = await s.get(Lesson, ids[idx + 1])
+                        if nxt:
+                            next_title = nxt.title
+                    rows = await status_map(s, user, stage.course_id)
+                    done = sum(1 for r in rows if r["status"] == STATUS_PASSED)
+                    progress_pct = round(done / max(1, len(rows)) * 100)
+        except Exception as e:  # noqa: BLE001
+            log.debug("تعذّر حساب التقدم: %s", e)
+
+    # ---------- الترويسة ----------
+    header = lv.render_header(
+        lesson.title,
+        lesson.summary or "",
+        difficulty=lesson.difficulty or "beginner",
+        est_minutes=lesson.est_minutes or 20,
+        lesson_number=lesson_no,
+        total_lessons=total_lessons,
+        progress_percent=progress_pct,
     )
-    if lesson.objectives:
-        header += "\n🎯 *الأهداف:*\n" + "\n".join(f"• {o}" for o in lesson.objectives)
-    await update.effective_message.reply_text(header[:3900], parse_mode=ParseMode.MARKDOWN)
+    objectives = lv.render_objectives(lesson.objectives)
+    await update.effective_message.reply_text(
+        (header + objectives)[:3900], parse_mode=ParseMode.HTML, disable_web_page_preview=True
+    )
 
     if is_outline:
         if not settings.ai_configured:
-            note = "🕓 هذا الدرس *مخطّط* — محتواه سيُولَّد تلقائيا عند تفعيل المساعد الذكي (AI)."
+            note = "🕓 هذا الدرس <b>مخطّط</b> — محتواه سيُولَّد تلقائيا عند تفعيل المساعد الذكي (AI)."
         else:
-            note = "🕓 هذا الدرس *مخطّط* — المحتوى قيد التوليد في الخلفية. اضغط «تحديث» بعد قليل."
-        await update.effective_message.reply_text(note, parse_mode=ParseMode.MARKDOWN)
+            note = "🕓 هذا الدرس <b>مخطّط</b> — المحتوى قيد التوليد في الخلفية. اضغط «🔄 تحديث» بعد قليل."
+        await update.effective_message.reply_text(note, parse_mode=ParseMode.HTML)
 
+    # ---------- المحتوى ----------
     if lesson.content_md:
-        await _send_chunks(update.effective_message, [lesson.content_md[:3900]])
+        sections = lv.split_markdown_sections(lesson.content_md)
+        for title, body in sections.items():
+            if not body.strip():
+                continue
+            chunk = lv.render_section(title, lv.md_to_tg(body))
+            await _send_html_chunks(update.effective_message, chunk)
+
+    # ---------- نقاط المفتاح ----------
+    key_points = lv.render_key_points(lesson.key_points or [])
+    if key_points:
+        await update.effective_message.reply_text(key_points[:3900], parse_mode=ParseMode.HTML)
+
+    # ---------- خطّاف الذاكرة ----------
+    hook = lv.render_memory_hook(lesson.memory_hook or "")
+    if hook:
+        await update.effective_message.reply_text(hook[:3900], parse_mode=ParseMode.HTML)
+
+    # ---------- الأكواد ----------
     if codes:
-        await _send_chunks(update.effective_message, _code_chunks(lesson.title, codes))
+        await _send_code_blocks(update.effective_message, codes)
+
+    # ---------- التنبيهات ----------
+    gotchas: list[str] = []
+    sec_notes: list[str] = []
+    for c in codes:
+        gotchas.extend(c.gotchas or [])
+        sec_notes.extend(c.security_notes or [])
+    gotchas = list(dict.fromkeys(gotchas))[:6]
+    sec_notes = list(dict.fromkeys(sec_notes))[:6]
+    warn = lv.render_warnings(gotchas, sec_notes)
+    if warn:
+        await update.effective_message.reply_text(warn[:3900], parse_mode=ParseMode.HTML)
+
+    # ---------- بطاقة المراجعة ----------
+    review = lv.render_review_card(
+        summary=lesson.summary or "",
+        key_points=lesson.key_points or [],
+        memory_hook=lesson.memory_hook or "",
+        next_step=next_title,
+    )
+    if review:
+        await update.effective_message.reply_text(review[:3900], parse_mode=ParseMode.HTML)
+
     await _send_assets(update.effective_message, assets)
 
+    # ---------- الأزرار ----------
     buttons: list[list[InlineKeyboardButton]] = []
     if is_outline:
         buttons.append(
@@ -225,6 +336,12 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         [
             InlineKeyboardButton("🤖 اشرح الدرس", callback_data=f"aex:{lesson_id}"),
             InlineKeyboardButton("💬 نقاش", callback_data=f"qa:{lesson_id}"),
+        ]
+    )
+    buttons.append(
+        [
+            InlineKeyboardButton("🎒 مركز التعلّم", callback_data="x:review"),
+            InlineKeyboardButton("🔬 غوص عميق", callback_data="x:deep"),
         ]
     )
     buttons.append([InlineKeyboardButton("📤 تصدير الدرس", callback_data=f"export:{lesson_id}")])

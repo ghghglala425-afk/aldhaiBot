@@ -96,6 +96,10 @@ async def root():
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
 
-    uvicorn.run("api.main:app", host="0.0.0.0", port=int(__import__("os").getenv("API_PORT", "8000")))
+    # Railway يحقن PORT — لازم نسمع عليه وإلا فشل فحص الصحة
+    _port = int(os.environ.get("PORT") or os.environ.get("API_PORT") or 8000)
+    uvicorn.run("api.main:app", host="0.0.0.0", port=_port)

@@ -76,6 +76,11 @@ class GeneratedLesson(BaseModel):
     est_minutes: int = 25
     code_samples: list[GeneratedCode] = Field(min_length=1)
     quiz_questions: list[GeneratedQuestion] = Field(min_length=1)
+    # ==== عناصر الحفظ والتركيز ====
+    key_points: list[str] = Field(default_factory=list)
+    memory_hook: str = ""
+    prerequisites: list[str] = Field(default_factory=list)
+    further_reading: list[str] = Field(default_factory=list)
 
     @field_validator("difficulty")
     @classmethod

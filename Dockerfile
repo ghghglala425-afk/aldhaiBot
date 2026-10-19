@@ -51,7 +51,8 @@ EXPOSE 8000
 
 # فحص الصحة (يُستخدم محليا؛ Railway يفحص عبر healthcheckPath)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://localhost:8000/health || exit 1
+    CMD curl -fsS http://localhost:${PORT:-8000}/health || exit 1
 
 # الخدمة الافتراضية = الـ API (البوت يُشغَّل بأمر بدء خاص على Railway)
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# ${PORT:-8000} → Railway يستخدم PORT، و Docker العادي يبقى على 8000
+CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

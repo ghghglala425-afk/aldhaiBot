@@ -153,6 +153,13 @@ class Lesson(Base):
     summary: Mapped[Optional[str]] = mapped_column(Text)
     objectives: Mapped[list] = mapped_column(JSON, default=list)
     content_md: Mapped[Optional[str]] = mapped_column(Text)
+    # ==== عناصر الحفظ والتركيز ====
+    key_points: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
+    memory_hook: Mapped[Optional[str]] = mapped_column(Text, default="", server_default="")
+    prerequisites: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
+    further_reading: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
+    # مدة القراءة المتوقعة بالدقائق — للخطط اليومية
+    est_reading_minutes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     language_slug: Mapped[Optional[str]] = mapped_column(String(60), index=True)
     difficulty: Mapped[str] = mapped_column(String(20), default="beginner")
     est_minutes: Mapped[int] = mapped_column(Integer, default=20)
@@ -571,3 +578,133 @@ class AIUsage(Base):
     errors: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     __table_args__ = (UniqueConstraint("provider", "day", name="uq_ai_usage_day"),)
+
+
+# =====================================================================
+#  سجل تنفيذ الكود + الإشعارات (ميزات متقدمة)
+# =====================================================================
+class CodeExecution(Base):
+    """سجل تنفيذ الكود — لمقارنة الأداء والأخطاء الشائعة."""
+
+    __tablename__ = "code_executions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    lesson_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("lessons.id", ondelete="SET NULL"), index=True
+    )
+    code_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("code_samples.id", ondelete="SET NULL"), index=True
+    )
+    language: Mapped[str] = mapped_column(String(50), default="python")
+    code: Mapped[str] = mapped_column(Text, default="")
+    stdout: Mapped[str] = mapped_column(Text, default="")
+    stderr: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(20), default="ok")
+    execution_time_ms: Mapped[int] = mapped_column(Integer, default=0)
+    memory_mb: Mapped[float] = mapped_column(default=0.0)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now, index=True)
+
+
+class Notification(Base):
+    """الإشعارات الذكية."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    type: Mapped[str] = mapped_column(String(50))
+    title: Mapped[str] = mapped_column(String(200))
+    message: Mapped[str] = mapped_column(Text)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ReviewSchedule(Base):
+    """جدولة المراجعة المتباعدة (Spaced Repetition - SM-2)."""
+
+    __tablename__ = "review_schedules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    lesson_id: Mapped[int] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"), index=True)
+    ease_factor: Mapped[float] = mapped_column(default=2.5)
+    interval: Mapped[int] = mapped_column(default=1)
+    repetition: Mapped[int] = mapped_column(default=0)
+    next_review: Mapped[dt.date] = mapped_column(Date, index=True)
+    last_quality: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    __table_args__ = (UniqueConstraint("user_id", "lesson_id", name="uq_review_schedule"),)
+
+
+class LessonRating(Base):
+    """تقييم المستخدم للدرس (1-5)."""
+
+    __tablename__ = "lesson_ratings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    lesson_id: Mapped[int] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"), index=True)
+    rating: Mapped[int] = mapped_column(Integer, default=5)
+    feedback: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    __table_args__ = (UniqueConstraint("user_id", "lesson_id", name="uq_lesson_rating_user"),)
+
+
+class LessonTimeLog(Base):
+    """سجل الوقت المستغرق في كل درس."""
+
+    __tablename__ = "lesson_time_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    lesson_id: Mapped[int] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"), index=True)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class CodeFavorite(Base):
+    """أكواد المفضلة للمستخدم."""
+
+    __tablename__ = "code_favorites"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_id: Mapped[int] = mapped_column(ForeignKey("code_samples.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    __table_args__ = (UniqueConstraint("user_id", "code_id", name="uq_code_favorite"),)
+
+
+class CodeShare(Base):
+    """مشاركة مقتطف كود برابط."""
+
+    __tablename__ = "code_shares"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_id: Mapped[int] = mapped_column(ForeignKey("code_samples.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(200), default="")
+    share_token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    is_public: Mapped[bool] = mapped_column(Boolean, default=True)
+    view_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ContentReport(Base):
+    """بلاغ عن محتوى غير مناسب."""
+
+    __tablename__ = "content_reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    content_type: Mapped[str] = mapped_column(String(30))
+    content_id: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)

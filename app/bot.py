@@ -32,6 +32,7 @@ from app.handlers import (
     runner,
     search,
     start,
+    study,
     targets,
     tools,
 )
@@ -56,6 +57,7 @@ COMMANDS = [
     BotCommand("run", "تشغيل كود"),
     BotCommand("tools", "أدوات اختبار الويب"),
     BotCommand("daily", "الدرس اليومي"),
+    BotCommand("hub", "مركز التعلّم والمراجعة"),
     BotCommand("rank", "لوحة الصدارة"),
     BotCommand("me", "حسابي وتقدّمي"),
     BotCommand("notes", "ملاحظاتي"),
@@ -166,6 +168,7 @@ def build_application() -> Application:
     search.register_handlers(app)
     runner.register_handlers(app)
     tools.register_handlers(app)
+    study.register_handlers(app)
     admin.register_handlers(app)
 
     app.add_error_handler(on_error)

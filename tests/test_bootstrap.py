@@ -115,10 +115,12 @@ class TestEnsureSeeded:
             _reset_db()
 
     def test_seed_uses_advisory_lock_on_postgres(self) -> None:
-        """على PostgreSQL ناخذ قفلا استشاريا لمنع الزرع المتزامن."""
+        """قفل على مستوى المعاملة — متوافق مع PgBouncer transaction mode."""
         src = Path("pipeline/seed.py").read_text(encoding="utf-8")
-        assert "pg_advisory_lock" in src
-        assert "pg_advisory_unlock" in src
+        assert "pg_advisory_xact_lock" in src
+        # أقفال الجلسة لا تعمل مع PgBouncer (transaction mode)
+        assert "pg_advisory_lock" not in src
+        assert "pg_advisory_unlock" not in src
 
 
 class TestStartupIntegration:

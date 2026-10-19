@@ -89,6 +89,11 @@ async def save_lesson(
     row.summary = lesson.summary
     row.objectives = lesson.objectives
     row.content_md = lesson.content_md
+    row.key_points = list(lesson.key_points or [])
+    row.memory_hook = lesson.memory_hook or ""
+    row.prerequisites = list(lesson.prerequisites or [])
+    row.further_reading = list(lesson.further_reading or [])
+    row.est_reading_minutes = max(0, int(lesson.est_minutes or 0) - 10)
     row.language_slug = plan.language
     row.difficulty = lesson.difficulty if lesson.difficulty else plan.difficulty
     row.est_minutes = lesson.est_minutes

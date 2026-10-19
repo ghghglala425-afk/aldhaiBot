@@ -402,12 +402,14 @@ async def ensure_seeded() -> bool:
         await main()
         return True
 
-    # PostgreSQL — قفل استشاري على مستوى الجلسة
+    # PostgreSQL — قفل على مستوى المعاملة (متوافق مع PgBouncer transaction mode
+    # الذي يوجّه إليه Railway مراجع Postgres تلقائيا؛ أقفال الجلسة لا تعمل معه)
     from sqlalchemy import text
 
     log.info("زرع البيانات الأساسية (PostgreSQL)…")
     async with engine.connect() as conn:
-        await conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": SEED_LOCK_ID})
+        # المعاملة تبقى مفتوحة حتى نهاية الزرع → القفل محفوظ طوال الفترة
+        await conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": SEED_LOCK_ID})
         try:
             if await _languages_present():
                 log.info("القاعدة مزروعة أثناء الانتظار — تخطّي.")
@@ -416,7 +418,7 @@ async def ensure_seeded() -> bool:
             return True
         finally:
             try:
-                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": SEED_LOCK_ID})
+                await conn.rollback()
             except Exception:  # noqa: BLE001
                 pass
 
