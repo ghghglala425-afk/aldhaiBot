@@ -53,6 +53,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://localhost:${PORT:-8000}/health || exit 1
 
-# الخدمة الافتراضية = الـ API (البوت يُشغَّل بأمر بدء خاص على Railway)
-# ${PORT:-8000} → Railway يستخدم PORT، و Docker العادي يبقى على 8000
-CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# نقطة الدخول الموحّدة — البوت هو الافتراضي (APP_ROLE=api للـ API)
+COPY scripts/entrypoint.sh /app/scripts/entrypoint.sh
+RUN chmod +x /app/scripts/entrypoint.sh
+
+CMD ["sh", "scripts/entrypoint.sh"]

@@ -253,34 +253,49 @@ async def _apply_column_migrations(conn) -> None:
 
     `create_all()` لا يضيف أعمدة جديدة لجدول قائم — والقاعدة على Railway
     استُعملت من قبل، فيجب توسيع جدول `lessons` يدويا.
-    """
-    from sqlalchemy import inspect, text
 
-    def _existing_columns(sync_conn, table: str) -> set[str]:
-        insp = inspect(sync_conn)
-        if table not in insp.get_table_names():
-            return set()
-        return {c["name"] for c in insp.get_columns(table)}
+    نقرأ الأعمدة مباشرة من information_schema (لا من الـ inspector الذي
+    تخزن ذاكرته المؤقتة نتائجه القديمة) ونضيف كل عمود ناقص على حدة.
+    """
+    from sqlalchemy import text
 
     # (الجدول، العمود، تعريفه في SQL)
     wanted = [
-        ("lessons", "key_points", "JSON"),
-        ("lessons", "memory_hook", "TEXT"),
-        ("lessons", "prerequisites", "JSON"),
-        ("lessons", "further_reading", "JSON"),
-        ("lessons", "est_reading_minutes", "INTEGER DEFAULT 0"),
+        ("lessons", "key_points", "JSON NOT NULL DEFAULT '[]'"),
+        ("lessons", "memory_hook", "TEXT NOT NULL DEFAULT ''"),
+        ("lessons", "prerequisites", "JSON NOT NULL DEFAULT '[]'"),
+        ("lessons", "further_reading", "JSON NOT NULL DEFAULT '[]'"),
+        ("lessons", "est_reading_minutes", "INTEGER NOT NULL DEFAULT 0"),
     ]
+
+    is_pg = not _DATABASE_URL.startswith("sqlite")
+
+    async def _columns(table: str) -> set[str]:
+        if is_pg:
+            sql = text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = :t"
+            )
+        else:
+            sql = text(f"PRAGMA table_info({table})")
+        res = await conn.execute(sql, {"t": table})
+        rows = res.fetchall()
+        if is_pg:
+            return {r[0] for r in rows}
+        return {r[1] for r in rows}
 
     for table, column, ddl in wanted:
         try:
-            existing = await conn.run_sync(_existing_columns, table)
-            if not existing or column in existing:
-                # الجدول غير موجود (سيُنشأ بـ create_all) أو العمود موجود
+            existing = await _columns(table)
+            if not existing:
+                # الجدول غير موجود — سيُنشأ عبر create_all بكل أعمدته
+                continue
+            if column in existing:
                 continue
             await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
-            log.info("أُضيف العمود %s.%s", table, column)
+            log.warning("مُرحّل: أُضيف العمود %s.%s", table, column)
         except Exception as e:  # noqa: BLE001
-            log.debug("تعذّر إضافة العمود %s.%s: %s", table, column, e)
+            log.warning("تعذّر إضافة العمود %s.%s: %s", table, column, e)
 
 
 async def init_db() -> None:

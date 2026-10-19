@@ -10,11 +10,13 @@ import asyncio
 import os
 
 from telegram import BotCommand, Update
+from telegram.error import Conflict, NetworkError, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
     ApplicationHandlerStop,
     TypeHandler,
+    Updater,
 )
 
 from app.handlers import (
@@ -44,6 +46,63 @@ from core.logging import get_logger, setup_logging
 setup_logging()
 log = get_logger("bot")
 
+# =============================================================================
+#  كاشف التعارض (نسخة ثانية تعمل بنفس التوكن)
+# =============================================================================
+_conflict_state = {"count": 0, "notified": False}
+
+
+def _updater_error(error: Exception) -> None:
+    """يُستدعى عند خطأ في جلب التحديثات.
+
+    `Conflict` يعني أن هناك نسخة أخرى تعمل بنفس التوكن — في هذه الحالة
+    لا تصل أي رسالة والبوت يبدو "ميتا" بلا سبب واضح. نُبلغ المشرف.
+    """
+    if isinstance(error, Conflict):
+        _conflict_state["count"] += 1
+        n = _conflict_state["count"]
+        if n == 1:
+            log.error(
+                "⛔ تعارض: هناك نسخة أخرى من البوت تعمل بنفس التوكن. "
+                "أوقفها (أو احذف الخدمة القديمة في Railway)."
+            )
+        elif n == 5 and not _conflict_state["notified"]:
+            _conflict_state["notified"] = True
+            log.error("⛔ تعارض مستمر (%s محاولات) — البوت لا يستقبل أي رسالة.", n)
+            _notify_admins_conflict()
+        return
+
+    if isinstance(error, NetworkError):
+        log.warning("⚠️ خطأ شبكة مؤقت: %s", error)
+        return
+
+    log.error("خطأ في جلب التحديثات: %s", error)
+
+
+async def _notify_admins_conflict() -> None:
+    """تنبيه المشرفين بتعارض التوكن (فشل صامت)."""
+    if not settings.admin_ids:
+        return
+    try:
+        from telegram import Bot
+
+        bot = Bot(settings.BOT_TOKEN)
+        for admin_id in settings.admin_ids:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    "⛔ <b>تعارض في البوت</b>\n\n"
+                    "هناك نسخة أخرى من هذا البوت تعمل بنفس التوكن، لذلك لا يصل "
+                    "أي رسالة جديدة.\n\n"
+                    "الحل: أوقف النسخة القديمة (خدمة Railway أخرى، أو عملية محلية، "
+                    "أو خادم آخر) ثم أعد التشغيل.",
+                    parse_mode="HTML",
+                )
+            except TelegramError:
+                continue
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر إبلاغ المشرف: %s", e)
+
 COMMANDS = [
     BotCommand("start", "بدء / القائمة الرئيسية"),
     BotCommand("menu", "إظهار الأزرار"),
@@ -70,7 +129,22 @@ COMMANDS = [
 
 
 async def on_error(update: object, context) -> None:
-    log.exception("خطأ أثناء معالجة تحديث: %s", context.error)
+    """معالج الأخطاء العام.
+
+    `Conflict` = هناك نسخة أخرى تعمل بنفس التوكن. في هذه الحالة لا يصل
+    أي تحديث، ومعالجتها كخطأ عادي تُظهر «حدث خطأ غير متوقع» بلا فائدة.
+    """
+    err = getattr(context, "error", None)
+
+    if isinstance(err, Conflict):
+        _updater_error(err)
+        return
+
+    if isinstance(err, NetworkError):
+        log.warning("⚠️ خطأ شبكة مؤقت: %s", err)
+        return
+
+    log.exception("خطأ أثناء معالجة تحديث: %s", err)
     if isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_text(
@@ -130,14 +204,43 @@ async def post_shutdown(app: Application) -> None:
     await jobs.stop_worker()
 
 
-def build_application() -> Application:
-    app = (
-        ApplicationBuilder()
-        .token(settings.BOT_TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
+class _ConflictAwareUpdater(Updater):
+    """محدّث يمرّر كاشف التعارض إلى حلقة Polling.
+
+    PTB لا يتيح تمرير `error_callback` عبر `Application.run_polling`،
+    فنتجاوز ذلك هنا. الفائدة: «Conflict» يعني أن نسخة أخرى تعمل بنفس
+    التوكن → نُبلغ المشرف بدل الفشل الصامت.
+    """
+
+    def start_polling(self, *args, error_callback=None, **kwargs):
+        return super().start_polling(
+            *args, error_callback=error_callback or _updater_error, **kwargs
+        )
+
+
+def build_application() -> None | Application:
+    """يبني التطبيق. في وضع Webhook لا يُنشأ محدّث polling إطلاقا."""
+    if settings.BOT_MODE == "webhook" and settings.WEBHOOK_URL:
+        app = (
+            ApplicationBuilder()
+            .token(settings.BOT_TOKEN)
+            .post_init(post_init)
+            .post_shutdown(post_shutdown)
+            .build()
+        )
+    else:
+        # polling — مع كاشف تعارض يُبلغ المشرف
+        from telegram import Bot
+
+        bot = Bot(settings.BOT_TOKEN)
+        updater = _ConflictAwareUpdater(bot=bot, update_queue=asyncio.Queue())
+        app = (
+            ApplicationBuilder()
+            .updater(updater)
+            .post_init(post_init)
+            .post_shutdown(post_shutdown)
+            .build()
+        )
 
     # حارس المحادثات الخاصة (المجموعة -1 = قبل كل شيء)
     app.add_handler(TypeHandler(Update, private_only), group=-1)

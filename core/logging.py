@@ -15,6 +15,15 @@ _FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
 def setup_logging() -> None:
     level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
     formatter = logging.Formatter(_FORMAT, datefmt="%Y-%m-%d %H:%M:%S")
+
+    # على ويندوز الترميز الافتراضي للطرفية (charmap/cp1256) لا يدعم الرموز
+    # التعبيرية → يفشل logging وتفقد السطر بالكامل. نفرض UTF-8 مع بديل.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001
+            pass
+
     root = logging.getLogger()
     root.handlers.clear()
 
