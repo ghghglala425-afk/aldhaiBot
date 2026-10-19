@@ -1,9 +1,8 @@
-﻿version: '3.8'
+version: '3.8'
 
 services:
   db:
     image: postgres:16-alpine
-    platform: linux/arm64
     environment:
       POSTGRES_USER: ${DB_USER:-cyber}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
@@ -23,7 +22,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    platform: linux/arm64
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redisdata:/data
@@ -42,11 +40,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
-      target: api
-      args:
-        INSTALL_DOCKER_CLI: "0"
-    platform: linux/arm64
-    command: gunicorn api.main:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
+    command: sh -c 'APP_ROLE=api exec sh scripts/entrypoint.sh'
     env_file: .env.prod
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
@@ -66,11 +60,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
-      target: bot
-      args:
-        INSTALL_DOCKER_CLI: "0"
-    platform: linux/arm64
-    command: python -m app.bot
+    command: sh -c 'APP_ROLE=bot exec sh scripts/entrypoint.sh'
     env_file: .env.prod
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
@@ -93,33 +83,8 @@ services:
         limits:
           memory: 1G
 
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.prod
-      target: worker
-      args:
-        INSTALL_DOCKER_CLI: "0"
-    platform: linux/arm64
-    command: celery -A pipeline.celery_app worker -Q outline,lesson,atlas,repair -c 2 --loglevel=INFO
-    env_file: .env.prod
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    deploy:
-      replicas: 2
-      resources:
-        limits:
-          memory: 1G
-
   nginx:
     image: nginx:alpine
-    platform: linux/arm64
     ports:
       - "80:80"
       - "443:443"
@@ -135,7 +100,6 @@ services:
 
   certbot:
     image: certbot/certbot:latest
-    platform: linux/arm64
     volumes:
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot

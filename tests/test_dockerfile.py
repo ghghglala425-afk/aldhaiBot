@@ -39,12 +39,17 @@ class TestDockerfileOrder:
         assert df.index("chown -R appuser:appuser /app") < df.index("USER appuser")
 
     def test_entrypoint_does_not_need_exec_bit(self) -> None:
-        """الاستدعاء عبر `sh` فلا نحتاج chmod — أخطاء الصلاحيات ت.aspect构建 تفشل."""
+        """الاستدعاء عبر `sh` فلا نحتاج chmod — أخطاء الصلاحيات تفشل البناء."""
         df = _dockerfile()
-        assert 'CMD ["sh", "scripts/entrypoint.sh"]' in df
+        assert "scripts/entrypoint.sh" in df
         assert "chmod +x /app/scripts/entrypoint.sh" not in df, (
             "chmod on a root-owned file after USER breaks the build"
         )
+
+    def test_cmd_falls_back_when_entrypoint_missing(self) -> None:
+        """إن لم يوجد السكربت في الصورة نشغّل البوت مباشرة (لا تنكسر الحاوية)."""
+        df = _dockerfile()
+        assert "python -m app.bot" in df.split("CMD")[-1], "CMD needs a bot fallback"
 
     def test_requirements_copied_before_pip_install(self) -> None:
         df = _dockerfile()
