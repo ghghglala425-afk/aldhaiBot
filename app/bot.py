@@ -350,6 +350,8 @@ def _start_health_server(port: int) -> None:
                     },
                     "bot_token": bool(settings.BOT_TOKEN),
                     "admins": settings.admin_ids,
+                    "errors": settings.check_required(),
+                    "warnings": settings.check_warnings(),
                 }
                 self._reply(200, _json.dumps(payload, ensure_ascii=False).encode())
             else:
@@ -407,13 +409,15 @@ def _startup_banner() -> None:
 
 def _run() -> None:
     errors = settings.check_required()
+    fatal = False
+    for e in errors:
+        log.error("❌ %s", e)
     if errors:
-        for e in errors:
-            log.error("❌ لا يمكن الإقلاع — %s", e)
         log.error(
-            "على Railway: تأكد من إضافة المتغير في Service → Variables ثم أعد النشر."
+            "على Railway: تأكد من إضافة المتغير في Service → Variables ثم أعد النشر.\n"
+            "ستبقى الخدمة تعمل لتشخيصها على /diag — لكنها لا ستستقبل أي رسالة."
         )
-        raise SystemExit(1)
+        fatal = True
     for w in settings.check_warnings():
         log.warning("⚠️ %s", w)
 
@@ -425,6 +429,12 @@ def _run() -> None:
     health_state = None
     if os.environ.get("PORT", "").strip().isdigit():
         health_state = _start_health_server(settings.WEBHOOK_PORT)
+
+    if fatal:
+        # لا نخرج حتى يبقى النشر قابلا للتشخيص عبر /diag
+        log.error("توقّف الإقلاع — البوت لا يعمل بدون BOT_TOKEN صالح.")
+        _idle_loop()
+        return
 
     try:
         asyncio.run(init_db())
@@ -455,6 +465,15 @@ def _run() -> None:
             )
     finally:
         asyncio.run(close_db())
+
+
+def _idle_loop() -> None:
+    """يبقي العملية حية بلا عمل — كي يبقى النشر قابلا للتشخيص."""
+    import time
+
+    log.warning("⏳ الخدمة في وضع الانتظار (لا يوجد BOT_TOKEN). راقب /diag لتعرف السبب.")
+    while True:
+        time.sleep(60)
 
 
 if __name__ == "__main__":

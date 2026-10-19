@@ -156,6 +156,36 @@ class TestPortHandling:
                     assert "--port 8000" not in line, f"{name}: {line.strip()}"
 
 
+class TestDiagnosticEndpoint:
+    """/diag يجعل النشر الفاشل قابلا للتشخيص عبر المتصفح."""
+
+    def test_health_server_offers_diag(self) -> None:
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        assert '"/diag"' in src
+        assert '"/health"' in src
+
+    def test_diag_reports_errors_and_warnings(self) -> None:
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        assert '"errors"' in src
+        assert '"warnings"' in src
+        assert '"database"' in src
+
+    def test_startup_banner_exists(self) -> None:
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        assert "_startup_banner" in src
+
+    def test_startup_failure_logs_traceback(self) -> None:
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        assert "traceback.format_exc()" in src
+
+    def test_missing_token_does_not_kill_the_container(self) -> None:
+        """بدون توكن تبقى العملية حية — النشر يبقى قابلا للتشخيص."""
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        assert "_idle_loop" in src
+        run_body = src.split("def _run()")[1].split("def _idle_loop")[0]
+        assert "raise SystemExit(1)" not in run_body
+
+
 class TestEntrypointRoles:
     def test_dockerfile_runs_the_bot(self) -> None:
         """الصورة تشغّل البوت افتراضيا (الـ API له أمر خاص)."""
