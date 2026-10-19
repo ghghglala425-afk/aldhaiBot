@@ -157,12 +157,18 @@ class TestPortHandling:
 
 
 class TestEntrypointRoles:
-    def test_entrypoint_is_referenced_by_both_configs(self) -> None:
-        assert "entrypoint.sh" in _read("railway.json")
-        assert "entrypoint.sh" in _read("railway.api.json")
+    def test_dockerfile_runs_the_bot(self) -> None:
+        """الصورة تشغّل البوت افتراضيا (الـ API له أمر خاص)."""
+        for name in ("Dockerfile", "Dockerfile.prod"):
+            cmd = [ln for ln in _read(name).splitlines() if ln.strip().startswith("CMD")]
+            assert cmd and "python -m app.bot" in cmd[-1], f"{name} must start the bot"
 
-    def test_api_role_uses_api_role_env(self) -> None:
-        assert "APP_ROLE=api" in _read("railway.api.json")
+    def test_api_config_uses_uvicorn(self) -> None:
+        assert "uvicorn api.main:app" in _read("railway.api.json")
 
-    def test_default_role_is_bot(self) -> None:
-        assert 'APP_ROLE:-bot' in _read("scripts/entrypoint.sh")
+    def test_railway_config_has_no_start_command(self) -> None:
+        """لا نحدد startCommand — يتولى Dockerfile الأمر (أقل نقاط فشل)."""
+        import json
+
+        data = json.loads(_read("railway.json"))
+        assert "startCommand" not in data["deploy"]

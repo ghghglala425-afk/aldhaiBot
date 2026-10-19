@@ -53,7 +53,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://localhost:${PORT:-8000}/health || exit 1
 
-# نقطة الدخول الموحّدة — البوت هو الافتراضي (APP_ROLE=api للـ API)
-# نستدعيها عبر sh فلا نحتاج صلاحية تنفيذ على الملف.
-# الاحتياط: إن لم يوجد السكربت نشغّل البوت مباشرة (لا تنكسر الحاوية).
-CMD ["sh", "-c", "if [ -f scripts/entrypoint.sh ]; then exec sh scripts/entrypoint.sh; else exec python -m app.bot; fi"]
+# نقطة الدخول — البوت هو الافتراضي (للـ API: APP_ROLE=api)
+CMD ["sh", "-c", "exec python -m app.bot"]

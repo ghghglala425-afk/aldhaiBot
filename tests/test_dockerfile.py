@@ -16,6 +16,10 @@ def _dockerfile() -> str:
     return (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
 
+def _read_cmd(name: str) -> list[str]:
+    return (ROOT / name).read_text(encoding="utf-8").splitlines()
+
+
 def _dockerignore_patterns() -> list[str]:
     lines = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
     out = []
@@ -41,15 +45,16 @@ class TestDockerfileOrder:
     def test_entrypoint_does_not_need_exec_bit(self) -> None:
         """الاستدعاء عبر `sh` فلا نحتاج chmod — أخطاء الصلاحيات تفشل البناء."""
         df = _dockerfile()
-        assert "scripts/entrypoint.sh" in df
         assert "chmod +x /app/scripts/entrypoint.sh" not in df, (
             "chmod on a root-owned file after USER breaks the build"
         )
 
-    def test_cmd_falls_back_when_entrypoint_missing(self) -> None:
-        """إن لم يوجد السكربت في الصورة نشغّل البوت مباشرة (لا تنكسر الحاوية)."""
-        df = _dockerfile()
-        assert "python -m app.bot" in df.split("CMD")[-1], "CMD needs a bot fallback"
+    def test_cmd_runs_the_bot_by_default(self) -> None:
+        """الصورة يجب أن تشغّل البوت (لا الـ API) افتراضيا."""
+        for name in ("Dockerfile", "Dockerfile.prod"):
+            cmd = [ln for ln in _read_cmd(name) if ln.strip().startswith("CMD")]
+            assert cmd, f"{name} has no CMD"
+            assert "python -m app.bot" in cmd[-1], f"{name} must start the bot"
 
     def test_requirements_copied_before_pip_install(self) -> None:
         df = _dockerfile()
@@ -57,8 +62,9 @@ class TestDockerfileOrder:
 
 
 class TestDockerfileContent:
-    def test_entrypoint_is_referenced_by_cmd(self) -> None:
-        assert "scripts/entrypoint.sh" in _dockerfile()
+    def test_cmd_does_not_depend_on_a_script(self) -> None:
+        """الأمر لا يعتمد على ملف سكربت — أقل نقاط فشل في البناء."""
+        assert "scripts/entrypoint.sh" not in _dockerfile().split("CMD")[-1]
 
     def test_curl_is_installed_for_healthcheck(self) -> None:
         df = _dockerfile()
@@ -137,13 +143,13 @@ class TestRailwayConfigs:
 
         data = json.loads((ROOT / "railway.json").read_text(encoding="utf-8"))
         assert data["build"]["builder"] == "DOCKERFILE"
-        assert "entrypoint" in data["deploy"]["startCommand"]
+        assert data["deploy"]["healthcheckPath"] == "/health"
 
     def test_railway_api_json_uses_api_role(self) -> None:
         import json
 
         data = json.loads((ROOT / "railway.api.json").read_text(encoding="utf-8"))
-        assert "APP_ROLE=api" in data["deploy"]["startCommand"]
+        assert "uvicorn api.main:app" in data["deploy"]["startCommand"]
 
     def test_healthcheck_path_is_health(self) -> None:
         import json

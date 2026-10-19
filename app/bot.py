@@ -462,3 +462,9 @@ if __name__ == "__main__":
         _run()
     except (KeyboardInterrupt, SystemExit):
         pass
+    except Exception:  # noqa: BLE001
+        # نطبع الـ traceback كاملاً حتى يظهر في سجلات Railway
+        import traceback
+
+        log.critical("💥 فشل الإقلاع — التفاصيل:\n%s", traceback.format_exc())
+        raise
