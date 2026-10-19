@@ -1,0 +1,37 @@
+# Secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv*/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data & runtime
+data/
+storage/
+media/
+*.db
+*.sqlite3
+*.log
+
+# VCS / editor
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local launcher scripts (not needed inside the image)
+run_*.ps1
+install_autostart.ps1
+backup_db.ps1
+*.bat
