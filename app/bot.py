@@ -334,6 +334,24 @@ def _start_health_server(port: int) -> None:
                     % (state["role"], "true" if state["ready"] else "false")
                 ).encode()
                 self._reply(200, body)
+            elif path == "/diag":
+                # تشخيص كامل: قاعدة البيانات، AI، إعدادات — عبر المتصفح
+                import json as _json
+
+                payload: dict[str, object] = {
+                    "status": "ok",
+                    "ready": state["ready"],
+                    "mode": settings.BOT_MODE,
+                    "database": _diag_database(),
+                    "ai": {
+                        "configured": settings.ai_configured,
+                        "providers": settings.free_providers,
+                        "model": settings.GEMINI_MODEL,
+                    },
+                    "bot_token": bool(settings.BOT_TOKEN),
+                    "admins": settings.admin_ids,
+                }
+                self._reply(200, _json.dumps(payload, ensure_ascii=False).encode())
             else:
                 self._reply(404, b'{"error":"not found"}')
 
@@ -350,17 +368,57 @@ def _start_health_server(port: int) -> None:
     return state
 
 
+def _diag_database() -> dict:
+    """تشخيص سريع لقاعدة البيانات — يظهر في /diag."""
+    from core.db import _DATABASE_URL, SessionLocal
+
+    info: dict[str, object] = {
+        "kind": "sqlite" if _DATABASE_URL.startswith("sqlite") else "postgresql",
+        "connected": False,
+        "error": None,
+    }
+    try:
+        from sqlalchemy import text
+
+        async def _ping() -> None:
+            async with SessionLocal() as s:
+                await s.execute(text("SELECT 1"))
+
+        asyncio.run(_ping())
+        info["connected"] = True
+    except Exception as e:  # noqa: BLE001
+        info["error"] = str(e)[:200]
+    return info
+
+
+def _startup_banner() -> None:
+    """لوحة إقلاع تكشف حالة كل شيء — تسهّل تشخيص أي نشر."""
+    log.info("=" * 52)
+    log.info("▶ إقلاع بوت أكاديمية الأمن السيبراني والبرمجة")
+    log.info("  الوضع        : %s", settings.BOT_MODE)
+    log.info("  قاعدة البيانات: %s", "SQLite" if settings.is_sqlite else "PostgreSQL")
+    log.info("  مزوّدو AI    : %s", ", ".join(settings.free_providers) or "لا يوجد")
+    log.info("  الموديل      : %s", settings.GEMINI_MODEL)
+    log.info("  المشرف       : %s", settings.admin_ids or "غير محدد")
+    log.info("  سجل التوكن    : %s", "✅ موجود" if settings.BOT_TOKEN else "❌ مفقود")
+    log.info("  Port         : %s", os.environ.get("PORT", "(غير محدد)"))
+    log.info("=" * 52)
+
+
 def _run() -> None:
     errors = settings.check_required()
     if errors:
         for e in errors:
-            log.error("لا يمكن الإقلاع — %s", e)
-        log.error("اضبط المتطلبات في ملف .env ثم أعد التشغيل.")
+            log.error("❌ لا يمكن الإقلاع — %s", e)
+        log.error(
+            "على Railway: تأكد من إضافة المتغير في Service → Variables ثم أعد النشر."
+        )
         raise SystemExit(1)
     for w in settings.check_warnings():
-        log.warning("تحذير — %s", w)
+        log.warning("⚠️ %s", w)
 
     _detect_platform()
+    _startup_banner()
 
     # خادم الفحص الصحي **قبل** أي عمل على قاعدة البيانات:
     # اتصال Postgres قد يتأخر (إعادة محاولة) فيفشل فحص صحة Railway.

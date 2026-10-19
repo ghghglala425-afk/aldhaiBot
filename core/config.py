@@ -246,14 +246,15 @@ class Settings(BaseSettings):
         return self.ENV.lower() in {"prod", "production"}
 
     def check_required(self) -> list[str]:
-        """تُعيد قائمة الأخطاء المانعة للإقلاع (فارغة = يمكن التشغيل)."""
+        """أخطاء تمنع الإقلاع كليا (فارغة = يمكن التشغيل).
+
+        فقط ما يجعل الخدمة عديمة الفائدة 완전히. أي شيء آخر (مثل
+        SECRET_KEY ضعيف) مجرد تحذير — لا نريد أن تنهار الحاوية بسببه
+        على Railway لأن ذلك يُعلَّم كنشر فاشل.
+        """
         errors: list[str] = []
         if not self.BOT_TOKEN or ":" not in self.BOT_TOKEN:
             errors.append("BOT_TOKEN غير مضبوط أو غير صالح (الصيغة: 123456:ABC...)")
-        if self.is_prod and self.SECRET_KEY in {"", "change-me", "change-me-with-a-long-random-string"}:
-            errors.append("SECRET_KEY ضعيف — اضبطه في بيئة الإنتاج")
-        if self.is_prod and self.BOT_MODE == "webhook" and not self.WEBHOOK_URL:
-            errors.append("WEBHOOK_URL مطلوب عند BOT_MODE=webhook")
         return errors
 
     def check_warnings(self) -> list[str]:
@@ -265,6 +266,10 @@ class Settings(BaseSettings):
                 "فعّل AI_FREE_MODE=1 مع GEMINI_API_KEY/GROQ_API_KEY، "
                 "أو اضبط AI_API_KEY لنقطة نهاية OpenAI-متوافقة."
             )
+        if self.is_prod and self.SECRET_KEY in {"", "change-me", "change-me-with-a-long-random-string"}:
+            warnings.append("SECRET_KEY ضعيف — اضبطه في بيئة الإنتاج")
+        if self.is_prod and self.BOT_MODE == "webhook" and not self.WEBHOOK_URL:
+            warnings.append("WEBHOOK_URL مطلوب عند BOT_MODE=webhook")
         return warnings
 
 
