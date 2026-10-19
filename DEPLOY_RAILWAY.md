@@ -77,11 +77,15 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 | الحقل | القيمة |
 |---|---|
 | **Start Command** | `sh -c 'exec python -m app.bot'` |
-| **Healthcheck Path** | *(اتركه فارغا — وضع Polling لا يستمع على منفذ)* |
+| **Healthcheck Path** | `/health` ✅ (البوت يشغّل خادم صحي صغير على `PORT`) |
 | **Restart Policy** | `On Failure` · Max Retries `10` |
 | **Num Replicas** | `1` ⚠️ **لا تزيدها** — نسختان = تعارض Telegram |
 
 > 🔎 `railway.json` في جذر المستودع يوفّر هذه الإعدادات تلقائيا.
+>
+> ℹ️ **لماذا خادم صحي؟** البوت يعمل بوضع Polling فلا يستمع على أي منفذ.
+> بدون خادم `/health` صغير (مدمج في `app/bot.py`) ستفتح Railway اتصالاً
+> مرفوضاً وتعتبر الخدمة غير سليمة فتعيد تشغيلها في حلقة لا نهائية.
 
 ---
 

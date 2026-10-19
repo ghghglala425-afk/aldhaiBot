@@ -75,3 +75,46 @@ class TestPlatformDetection:
         before = settings.WEBHOOK_PORT
         _detect_platform()
         assert settings.WEBHOOK_PORT == before
+
+
+class TestHealthServer:
+    """خادم الفحص الصحي — يمنع Railway من اعتبار الخدمة غير سليمة."""
+
+    def test_health_endpoint_responds(self) -> None:
+        import socket
+        import time
+        import urllib.request
+
+        from app.bot import _start_health_server
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        _start_health_server(port)
+        time.sleep(0.6)
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as r:
+            assert r.status == 200
+            assert b'"status":"ok"' in r.read()
+
+    def test_unknown_path_returns_404(self) -> None:
+        import socket
+        import time
+        import urllib.error
+        import urllib.request
+
+        from app.bot import _start_health_server
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        _start_health_server(port)
+        time.sleep(0.6)
+
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/nope", timeout=5)
+            raise AssertionError("expected HTTP 404")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404

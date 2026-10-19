@@ -182,6 +182,47 @@ def _detect_platform() -> None:
         log.info("اكتُشف نطاق Railway: %s", domain)
 
 
+def _start_health_server(port: int) -> None:
+    """خادم صحي صغير في خيط منفصل — يخدم /health على Railway.
+
+    البوت في وضع Polling لا يستمع على أي منفذ، وبلا هذا الخادم تعتبر
+    Railway الخدمة غير سليمة (Connection refused) فتعيد تشغيلها في حلقة.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class _HealthHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def _reply(self, code: int, body: bytes) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except OSError:
+                pass
+
+        def do_GET(self) -> None:  # noqa: N802
+            path = self.path.split("?", 1)[0].rstrip("/") or "/"
+            if path in ("/health", "/healthz"):
+                self._reply(200, b'{"status":"ok","service":"bot"}')
+            else:
+                self._reply(404, b'{"error":"not found"}')
+
+        def log_message(self, *args) -> None:  # noqa: D102
+            return
+
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        log.info("خادم الفحص الصحي يعمل على المنفذ %s", port)
+    except OSError as e:
+        log.warning("تعذّر تشغيل خادم الفحص الصحي على %s: %s", port, e)
+
+
 def _run() -> None:
     errors = settings.check_required()
     if errors:
@@ -196,6 +237,10 @@ def _run() -> None:
 
     asyncio.run(init_db())
     app = build_application()
+
+    # خادم الفحص الصحي (يلزم في Railway حيث لا يوجد Polling listener)
+    if os.environ.get("PORT", "").strip().isdigit():
+        _start_health_server(settings.WEBHOOK_PORT)
 
     try:
         if settings.BOT_MODE == "webhook" and settings.WEBHOOK_URL:
