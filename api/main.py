@@ -27,6 +27,14 @@ async def lifespan(app: FastAPI):
     if not errors:
         log.info("كل المفاتيح المطلوبة سليمة.")
     await init_db()
+    # زرع البيانات الأساسية إن كانت القاعدة فارغة (قاعدة Railway الجديدة)
+    try:
+        from pipeline.seed import ensure_seeded
+
+        if await ensure_seeded():
+            log.info("تمت زرع البيانات الأساسية.")
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر زرع البيانات الأساسية: %s", e)
     yield
     await close_db()
 

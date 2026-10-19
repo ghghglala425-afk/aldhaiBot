@@ -147,7 +147,15 @@ def _engine_kwargs(url: str) -> dict:
             return {"poolclass": StaticPool, "connect_args": {"check_same_thread": False}}
         # عدة كتّاب (البوت + عامل التوليد + API) على نفس الملف
         return {"connect_args": {"timeout": 30}}
-    return {"pool_pre_ping": True, "pool_size": 10, "max_overflow": 20}
+    # PostgreSQL — حجم محدود عمدا: (pool_size + max_overflow) × الخدمات
+    # يجب أن يبقى أقل من max_connections (خصوصا على Railway).
+    return {
+        "pool_pre_ping": True,
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_timeout": settings.DB_POOL_TIMEOUT,
+        "pool_recycle": settings.DB_POOL_RECYCLE,
+    }
 
 
 class _SessionMakerProxy:

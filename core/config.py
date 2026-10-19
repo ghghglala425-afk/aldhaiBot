@@ -78,6 +78,15 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://cyber:cyber@db:5432/cyberbot"
     REDIS_URL: str = "redis://cache:6379/0"
 
+    # ===== ضبط اتصالات قاعدة البيانات =====
+    # مهم على Railway: مجموع (pool_size + max_overflow) × عدد الخدمات
+    # يجب أن يبقى أقل من max_connections الخاص بـ PostgreSQL.
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 5
+    DB_POOL_TIMEOUT: int = 30
+    # تدوير الاتصالات كل 30 دقيقة (الـ proxy يقطع الاتصالات الخاملة)
+    DB_POOL_RECYCLE: int = 1800
+
     @field_validator("DATABASE_URL")
     @classmethod
     def _normalize_db_url(cls, v: str) -> str:

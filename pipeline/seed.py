@@ -354,5 +354,72 @@ async def main() -> None:
     log.info("اكتملت البذور.")
 
 
+# =====================================================================
+#  الزرع التلقائي عند الإقلاع (مناسب لـ Railway والسحابات)
+# =====================================================================
+SEED_LOCK_ID = 8812345  # معرّف قفل PostgreSQL استشاري
+
+
+async def _languages_present() -> bool:
+    """هل توجد لغات في القاعدة؟ (فحص سريع)."""
+    try:
+        async with SessionLocal() as session:
+            count = await session.scalar(select(Language.id).limit(1))
+    except Exception as e:  # noqa: BLE001
+        # الجداول غير موجودة بعد (أول إقلاع)
+        log.debug("فحصLanguages غير متاح: %s", e)
+        return False
+    return count is not None
+
+
+async def ensure_seeded() -> bool:
+    """يضمن وجود البيانات الأساسية — مرة واحدة فقط.
+
+    آمن للتكرار (كل خطوة تفحص الوجود) وآمن مع التزامن:
+    على PostgreSQL نأخذ قفلا استشاريا حتى لا يزرع البوت والـ API في وقت واحد.
+    يعيد True إذا تم الزرع الآن.
+    """
+    # 0) المخطط يجب أن يكون موجودا قبل أي فحص/زرع
+    try:
+        await init_db()
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر تهيئة المخطط — تخطّي الزرع: %s", e)
+        return False
+
+    try:
+        if await _languages_present():
+            log.debug("القاعدة مزروعة بالفعل — تخطّي الزرع.")
+            return False
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر فحص القاعدة للزرع: %s", e)
+        return False
+
+    from core.db import _DATABASE_URL, engine
+
+    if _DATABASE_URL.startswith("sqlite"):
+        # محليا: عملية واحدة، يكفي الفحص السابق
+        log.info("زرع البيانات الأساسية (SQLite)…")
+        await main()
+        return True
+
+    # PostgreSQL — قفل استشاري على مستوى الجلسة
+    from sqlalchemy import text
+
+    log.info("زرع البيانات الأساسية (PostgreSQL)…")
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT pg_advisory_lock(:k)"), {"k": SEED_LOCK_ID})
+        try:
+            if await _languages_present():
+                log.info("القاعدة مزروعة أثناء الانتظار — تخطّي.")
+                return False
+            await main()
+            return True
+        finally:
+            try:
+                await conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": SEED_LOCK_ID})
+            except Exception:  # noqa: BLE001
+                pass
+
+
 if __name__ == "__main__":
     asyncio.run(main())

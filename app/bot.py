@@ -88,6 +88,16 @@ async def post_init(app: Application) -> None:
                  settings.AI_DAILY_TOKEN_BUDGET or "بلا سقف")
     else:
         log.info("وضع AI: %s", settings.ai_mode)
+
+    # زرع البيانات الأساسية إن كانت القاعدة فارغة (قاعدة Railway الجديدة)
+    try:
+        from pipeline.seed import ensure_seeded
+
+        if await ensure_seeded():
+            log.info("تمت زرع البيانات الأساسية.")
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر زرع البيانات الأساسية: %s", e)
+
     setup_jobs(app)
     from pipeline import jobs
 

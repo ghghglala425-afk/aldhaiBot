@@ -29,14 +29,31 @@
 
 ## الخطوة 2 — إضافة قاعدة البيانات (30 ثانية)
 
-1. في المشروع: **+ New** → **Database** → **PostgreSQL**.
-2. Railway يحقن تلقائيا المتغير `DATABASE_URL` **في كل خدمة** ✅
-   (الكود يضيف `+asyncpg` تلقائيا — انظر `core/config.py`).
+### ❓ «ماذا أضيف إلى قاعدة PostgreSQL لربطها بالبوت؟»
 
-> ⚠️ **مهم:** المتغير المحقون يظهر في **Variables خدمة Postgres** فقط.
-> انسخه إلى **Variables خدمة البوت** و **Variables خدمة الـ API**:
-> - إما مرجع: `DATABASE_URL = ${{Postgres.DATABASE_URL}}`
-> - أو انسخ الرابط الفعلي كاملا.
+**لا تضيف شيئا إلى قاعدة البيانات يدوياً.**
+
+| السؤال | الجواب |
+|---|---|
+| هل أنشئ جداول يدوياً؟ | ❌ **لا** — 34 جدولاً تُنشأ تلقائيا عند أول إقلاع (`create_all`) |
+| هل أضيف Extensions؟ | ❌ **لا** — لا حاجة (البحث بـ `ILIKE`، لا `pg_trgm`) |
+| هل أكتب SQL يدوياً؟ | ❌ **لا** — المخطط من `core/models.py` |
+| هل أزرع البيانات يدوياً؟ | ❌ **لا** — **الزرع تلقائي عند الإقلاع** (48 لغة + كورس + شارات + مسارات) |
+
+**ما تضيفه فعلاً هو متغير واحد في Variables كل خدمة:**
+
+1. في المشروع: **+ New** → **Database** → **PostgreSQL**.
+2. **Variables خدمة Postgres** → انسخ رابط `DATABASE_URL`.
+3. **Variables خدمة البوت** → أضف:
+   ```
+   DATABASE_URL = ${{Postgres.DATABASE_URL}}
+   ```
+4. **Variables خدمة الـ API** → نفس السطر.
+
+> ⚠️ **المتغير المحقون يظهر في خدمة Postgres فقط** — كل خدمة تحتاجه بنفسها.
+>
+> 💡 استخدم المضيف **الداخلي** `postgres.railway.internal`:
+> لا يحتاج IPv6 ولا يُحتسب ضمن egress.
 
 ### 💾 الـ Volume (لحفظ البيانات مع SQLite)
 
@@ -59,7 +76,7 @@
 | مضيف `db` (اسم Compose) | غيّره إلى مضيف Postgres الحقيقي |
 
 > ✅ **الكود لم يعد ينهار بسبب هذا الخطأ** — يتحوّل تلقائيا إلى SQLite ويشتغل.
-> راقبLogs لترى: `مضيف قاعدة البيانات ... التحويل إلى SQLite`.
+> راقب Logs لترى: `مضيف قاعدة البيانات ... التحويل إلى SQLite`.
 > لكن Postgres أفضل للبيانات المشتركة بين البوت والـ API.
 
 ### 🔍 للتأكد من القاعدة المستعملة فعليا
@@ -67,6 +84,13 @@
 GET https://<your-service>.up.railway.app/health
 → {"status":"ok","database":"postgresql","database_host":"postgres.railway.internal",...}
 ```
+
+### 🛟 إذا ظهر: `FATAL: sorry, too many clients already`
+
+عدد اتصالات PostgreSQL تجاوز الحد. التطبيق يستخدم **5 + 5 = 10 اتصالات كحد أقصى لكل خدمة**
+(قابلة للضبط عبر `DB_POOL_SIZE` و `DB_MAX_OVERFLOW` في Variables). تأكد من:
+- عدم وجود نسخ قديمة من البوت متصلة بالقاعدة.
+- `Num Replicas = 1` لكل خدمة.
 
 ---
 
@@ -88,11 +112,16 @@ GET https://<your-service>.up.railway.app/health
 | `SECRET_KEY` | `‏<سلسلة عشوائية 64>` | سري |
 | `VERIFY_EXEC` | `0` | بلا Docker |
 | `SANDBOX_LOCAL` | `0` | بلا تنفيذ محلي |
-| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | من زر PostgreSQL |
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | ⚠️ **في كل خدمة** (بوت + API) |
+| `DB_POOL_SIZE` | `5` | اتصالات دائمة لكل خدمة |
+| `DB_MAX_OVERFLOW` | `5` | اتصال إضافي عند الذروة |
 | `LOG_LEVEL` | `INFO` | |
 | `ENV` | `prod` | ⚠️ يفرض `SECRET_KEY` قويا |
 
 > 🔐 **كل الأسرار تُخزَّن مشفّرة** في Railway. لا تضعها في الكود ولا في GitHub.
+
+> 🌱 **البيانات الأساسية تُزرع تلقائيا** عند أول إقلاع (48 لغة + كورس تجريبي + 8 شارات + 3 مسارات).
+> لا حاجة لأي أمر يدوي. الزرع آمن للتكرار ولا يكرّر البيانات.
 
 **التوليد العشوائي لـ `SECRET_KEY`:**
 ```powershell
