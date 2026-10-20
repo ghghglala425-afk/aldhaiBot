@@ -101,6 +101,22 @@ class TestAdminsConfigured:
         assert '"admins_configured"' in _src()
 
 
+class TestLiveStats:
+    """عدّاد الرسائل — دليل مباشر على أن البوت يستقبل."""
+
+    def test_counter_increments(self) -> None:
+        from app.bot import _bump_update_counter, _live_stats
+
+        before = _live_stats["updates"]
+        _bump_update_counter()
+        assert _live_stats["updates"] == before + 1
+        assert _live_stats["last_update"] > 0
+
+    def test_diag_exposes_the_counter(self) -> None:
+        assert '"updates_received"' in _src()
+        assert "_count_update" in _src()
+
+
 class TestTcpProbe:
     def test_probe_returns_false_for_a_closed_port(self) -> None:
         import socket

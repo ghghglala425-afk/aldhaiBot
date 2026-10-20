@@ -216,6 +216,12 @@ async def post_init(app: Application) -> None:
     jobs.start_worker()
 
 
+async def _count_update(update: object, context) -> None:
+    """يعدّ الرسائل الواردة (لا يوقف المعالجة)."""
+    if isinstance(update, Update):
+        _bump_update_counter()
+
+
 async def private_only(update: object, context) -> None:
     """يمنع استخدام البوت في المجموعات (خصوصية + منع إغراق التوليد)."""
     if not isinstance(update, Update):
@@ -283,7 +289,8 @@ def build_application() -> None | Application:
             .build()
         )
 
-    # حارس المحادثات الخاصة (المجموعة -1 = قبل كل شيء)
+    # حارس المحادثات الخاصة (المجموعة -1 = قبل كل شيء) + عدّاد النشاط
+    app.add_handler(TypeHandler(Update, _count_update), group=-2)
     app.add_handler(TypeHandler(Update, private_only), group=-1)
 
     # المحادثات في مجموعات منفصلة لتجنّب التداخل
@@ -355,6 +362,17 @@ _health_started = False
 # حالة مشتركة بين خيط الفحص الصحي وحلقة التطبيق.
 # خيط الفحص الصحي لا يملك حلقة أحداث، فلا يمكنه استعمال محرّك SQLAlchemy.
 _db_state: dict[str, object] = {"ok": False, "error": None, "ready": False}
+
+# عدّاد الرسائل الواردة — دليل مباشر على أن البوت ي-polling
+_live_stats: dict[str, int] = {"updates": 0, "last_update": 0}
+
+
+def _bump_update_counter() -> None:
+    """يُستدعى عند كل تحديث وارد — لعرض نشاط البوت في /diag."""
+    import time
+
+    _live_stats["updates"] += 1
+    _live_stats["last_update"] = int(time.time())
 
 
 def _probe_tcp(host: str, port: int, timeout: float = 3.0) -> bool:
@@ -443,6 +461,8 @@ def _start_health_server(port: int) -> None:
                     "bot_username": _token_state["username"],
                     "admins": settings.admin_ids,
                     "admins_configured": bool(settings.admin_ids),
+                    "updates_received": _live_stats["updates"],
+                    "last_update": _live_stats["last_update"],
                     "errors": settings.check_required(),
                     "warnings": settings.check_warnings(),
                 }
