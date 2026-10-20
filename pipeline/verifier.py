@@ -30,8 +30,10 @@ class VerifyReport:
         )
 
 
-def _check_quiz(lesson: GeneratedLesson, report: VerifyReport) -> None:
-    min_questions = settings.GEN_MIN_CODES * 2
+def _check_quiz(
+    lesson: GeneratedLesson, report: VerifyReport, min_codes: int | None = None
+) -> None:
+    min_questions = (min_codes or settings.GEN_MIN_CODES) * 2
     if len(lesson.quiz_questions) < min_questions:
         report.issues.append(
             f"عدد الأسئلة {len(lesson.quiz_questions)} أقل من {min_questions} (2 لكل كود)"
@@ -71,21 +73,23 @@ async def verify_lesson(
     expect_language: str | None = None,
     check_exec: bool | None = None,
     check_atlas: bool | None = None,
+    min_codes: int | None = None,
 ) -> VerifyReport:
     report = VerifyReport(passed=False)
     do_exec = settings.VERIFY_EXEC if check_exec is None else check_exec
     do_atlas = settings.GEN_ENRICH_ATLAS if check_atlas is None else check_atlas
+    required_codes = min_codes or settings.GEN_MIN_CODES
 
     # 1) العدد
-    if len(lesson.code_samples) < settings.GEN_MIN_CODES:
+    if len(lesson.code_samples) < required_codes:
         report.issues.append(
-            f"عدد الأكواد {len(lesson.code_samples)} أقل من {settings.GEN_MIN_CODES}"
+            f"عدد الأكواد {len(lesson.code_samples)} أقل من {required_codes}"
         )
     if len(lesson.content_md.strip()) < 200:
         report.issues.append("الشرح النظري قصير جدا")
 
     # 2) الاختبار
-    _check_quiz(lesson, report)
+    _check_quiz(lesson, report, required_codes)
 
     # 3) موسوعة الأكواد (بنية)
     if do_atlas:

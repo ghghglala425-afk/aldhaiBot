@@ -210,21 +210,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode=ParseMode.MARKDOWN
             )
             return
-        codes = list(
-            (await s.execute(
-                select(CodeSample).where(CodeSample.lesson_id == lesson_id).order_by(CodeSample.order_index)
-            )).scalars().all()
-        )
-        labs = await labs_for_lesson(s, lesson_id)
-        assets = list(
-            (await s.execute(select(LessonAsset).where(LessonAsset.lesson_id == lesson_id))).scalars().all()
-        )
         is_outline = lesson.status == "outline" or not lesson.content_md
-        # التعبئة عند الطلب (Lazy fill)
-        if is_outline and settings.GEN_LAZY_ON_OPEN and settings.ai_configured:
-            from pipeline import jobs
-
-            await jobs.enqueue_lesson(s, lesson_id)
 
         # ---------- رقم الدرس + التقدم + الدرس التالي ----------
         try:
@@ -252,6 +238,49 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:  # noqa: BLE001
             log.warning("تعذّر تسجيل بدء الدرس: %s", e)
 
+    # ---------- التوليد الفوري عند الفتح (Lazy fill سريع) ----------
+    if is_outline and settings.GEN_LAZY_ON_OPEN and settings.ai_configured:
+        status_msg = None
+        try:
+            status_msg = await update.effective_message.reply_text(
+                "⚡ <b>نبني هذا الدرس الآن</b>\n"
+                "<i>شرح عميق، أمثلة عملية، وأسئلة — خلال لحظات.</i>",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.debug("تعذّر إرسال رسالة التوليد: %s", e)
+
+        from pipeline import jobs
+
+        res = await jobs.generate_lesson_now(lesson_id, fast=True, timeout=150)
+        if status_msg is not None:
+            try:
+                await status_msg.delete()
+            except Exception:  # noqa: BLE001
+                pass
+        if not res.get("ok"):
+            log.warning("توليد الدرس #%s فشل/تأخر: %s", lesson_id, res.get("error"))
+            try:
+                async with SessionLocal() as s:
+                    await jobs.enqueue_lesson(s, lesson_id, priority=9)
+            except Exception as e:  # noqa: BLE001
+                log.warning("تعذّر إدراج توليد احتياطي: %s", e)
+
+    # إعادة تحميل الدرس والأكواد بعد التوليد
+    async with SessionLocal() as s:
+        lesson = await s.get(Lesson, lesson_id) or lesson
+        codes = list(
+            (await s.execute(
+                select(CodeSample).where(CodeSample.lesson_id == lesson_id).order_by(CodeSample.order_index)
+            )).scalars().all()
+        )
+        labs = await labs_for_lesson(s, lesson_id)
+        assets = list(
+            (await s.execute(select(LessonAsset).where(LessonAsset.lesson_id == lesson_id))).scalars().all()
+        )
+        is_outline = lesson.status == "outline" or not lesson.content_md
+
     # ---------- الترويسة ----------
     header = lv.render_header(
         lesson.title,
@@ -277,10 +306,10 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # ---------- المحتوى ----------
     if lesson.content_md:
         sections = lv.split_markdown_sections(lesson.content_md)
-        for title, body in sections.items():
+        for i, (title, body) in enumerate(sections.items(), start=1):
             if not body.strip():
                 continue
-            chunk = lv.render_section(title, lv.md_to_tg(body))
+            chunk = lv.render_section(title, lv.md_to_tg(body), index=i)
             await _send_html_chunks(update.effective_message, chunk)
 
     # ---------- نقاط المفتاح ----------
@@ -292,6 +321,11 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     hook = lv.render_memory_hook(lesson.memory_hook or "")
     if hook:
         await tg.send_text(update.effective_message, hook[:3900], parse_mode=ParseMode.HTML)
+
+    # ---------- للتوسّع أكثر ----------
+    extra = lv.render_further_reading(getattr(lesson, "further_reading", None))
+    if extra:
+        await tg.send_text(update.effective_message, extra[:3900], parse_mode=ParseMode.HTML)
 
     # ---------- الأكواد ----------
     if codes:

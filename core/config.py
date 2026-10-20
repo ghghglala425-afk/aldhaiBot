@@ -113,7 +113,9 @@ class Settings(BaseSettings):
     PROXY_TIMEOUT: int = 20
 
     # Content generation / verification
-    GEN_MIN_CODES: int = 12
+    GEN_MIN_CODES: int = 6
+    # أمثلة الكود في التوليد الفوري عند فتح الدرس (أسرع، ثم يُثرى لاحقا)
+    GEN_FAST_CODES: int = 4
     GEN_MIN_QUESTIONS: int = 8
     GEN_MIN_USAGES: int = 8
     GEN_ENRICH_ATLAS: bool = True

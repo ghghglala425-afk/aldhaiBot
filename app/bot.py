@@ -283,6 +283,7 @@ def build_application() -> None | Application:
         app = (
             ApplicationBuilder()
             .token(settings.BOT_TOKEN)
+            .concurrent_updates(True)
             .post_init(post_init)
             .post_shutdown(post_shutdown)
             .build()
@@ -296,6 +297,7 @@ def build_application() -> None | Application:
         app = (
             ApplicationBuilder()
             .updater(updater)
+            .concurrent_updates(True)
             .post_init(post_init)
             .post_shutdown(post_shutdown)
             .build()

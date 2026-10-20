@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import time
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -255,6 +256,81 @@ async def _generate_lesson_job(session, job: GenerationJob) -> dict:
         return {"ok": False, "error": "; ".join(report.issues[:5]) or "فشل التحقق"}
     row = await save_lesson(session, plan, generated, verified=True, publish=True)
     return {"ok": True, "lesson_id": row.id, "codes": len(generated.code_samples)}
+
+
+async def generate_lesson_now(
+    lesson_id: int, *, fast: bool = True, timeout: float = 150.0
+) -> dict:
+    """يولّد درسا مخططا فورا في مسار الاستدعاء (بلا انتظار العامل).
+
+    يمنع التوليد المكرر عبر صف مهمة بحالة running. إن كانت هناك مهمة جارية
+    بالفعل ينتظر نتيجتها بدل إهدار حصة AI.
+    """
+    key = f"lesson:{lesson_id}"
+    deadline = time.monotonic() + max(10.0, timeout)
+    job_id: int | None = None
+
+    async with SessionLocal() as session:
+        lesson = await session.get(Lesson, lesson_id)
+        if not lesson:
+            return {"ok": False, "error": "الدرس غير موجود"}
+        if lesson.status != "outline" and lesson.content_md:
+            return {"ok": True, "skipped": True}
+
+        run_job: GenerationJob | None = None
+        async with _claim_lock:
+            job = await session.scalar(
+                select(GenerationJob).where(GenerationJob.dedup_key == key)
+            )
+            if job and job.status == "running":
+                job_id = job.id
+            else:
+                if job is None:
+                    job = GenerationJob(
+                        kind="lesson", dedup_key=key, lesson_id=lesson_id, priority=10
+                    )
+                    session.add(job)
+                job.status = "running"
+                job.error = None
+                job.started_at = _now()
+                job.updated_at = _now()
+                job.attempts = (job.attempts or 0) + 1
+                await session.commit()
+                await session.refresh(job)
+                job_id = job.id
+                run_job = job
+
+        if run_job is not None:
+            try:
+                res = await _generate_lesson_job(session, run_job)
+            except Exception as e:  # noqa: BLE001
+                log.exception("فشل التوليد الفوري للدرس #%s: %s", lesson_id, e)
+                res = {"ok": False, "error": str(e)[:300]}
+
+            job = await session.get(GenerationJob, job_id)
+            if job:
+                job.finished_at = _now()
+                job.updated_at = _now()
+                job.status = "done" if res.get("ok") else "failed"
+                job.error = None if res.get("ok") else (res.get("error") or "خطأ")
+                await session.commit()
+            return res
+
+    # مهمة جارية بالفعل: انتظر انتهاءها بدل التوليد المكرر.
+    while time.monotonic() < deadline:
+        await asyncio.sleep(1.5)
+        async with SessionLocal() as session:
+            lesson = await session.get(Lesson, lesson_id)
+            if lesson and lesson.status != "outline" and lesson.content_md:
+                return {"ok": True, "skipped": True}
+            job = await session.get(GenerationJob, job_id)
+            if job and job.status == "failed":
+                return {"ok": False, "error": job.error or "فشل التوليد"}
+    return {
+        "ok": False,
+        "error": "انتهت مهلة الانتظار — أُكمل التوليد في الخلفية",
+        "pending": True,
+    }
 
 
 async def _outline_job(session, job: GenerationJob) -> dict:

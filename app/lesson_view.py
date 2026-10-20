@@ -81,11 +81,14 @@ def md_to_tg(text: str) -> str:
     out = re.sub(r"~~(.+?)~~", r"<s>\1</s>", out)
     # code inline
     out = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", out)
+    # مهام مربّعة (قبل القوائم كي لا تُلتقط كنقطة عادية)
+    out = re.sub(r"(?m)^[ \t]*[-•][ \t]*\[[xX]\][ \t]*(.+)$", r"  ☑️ <s>\1</s>", out)
+    out = re.sub(r"(?m)^[ \t]*[-•][ \t]*\[\s*\][ \t]*(.+)$", r"  ☐ \1", out)
     # قوائم — نحافظ على المسافة البادئة أثناء الإحاطة
     out = re.sub(r"(?m)^[ \t]*[-•][ \t]+(.+)$", r"  ▫️ \1", out)
     out = re.sub(r"(?m)^[ \t]*(\d+)[.)][ \t]+(.+)$", r"  \1️⃣ \2", out)
-    # blockquote
-    out = re.sub(r"(?m)^&gt;\s?(.*)$", r"  <i>\1</i>", out)
+    # blockquote — صندوق اقتباس بصري
+    out = re.sub(r"(?m)^&gt;\s?(.*)$", r"<blockquote>\1</blockquote>", out)
     return out.strip()
 
 
@@ -299,15 +302,56 @@ def render_footer(next_lesson: str = "", xp: int = 0, streak: int = 0) -> str:
     return "\n".join(out)
 
 
-def render_section(title: str, body: str, emoji: str = "📘") -> str:
-    """قسم عام بعنوان."""
+# ترتيب بصري: لكل نوع قسم رمز ولون (تيليجرام بلا ألوان نصية — الرمز هو اللون)
+_SECTION_STYLES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("مفهوم", "الفكرة", "تعريف", "ببساطة"), "🧠"),
+    (("لماذا", "أهمية", "يهم"), "🎯"),
+    (("تفصيل", "خطوة", "شرح", "تشريح"), "🧩"),
+    (("مثال", "أكواد", "تطبيق", "عملي"), "💻"),
+    (("خطأ", "أخطاء", "مزلق", "تحذير"), "⚠️"),
+    (("أمان", "أمن", "حماية", "ثغرة"), "🛡️"),
+    (("مقارنة", "جدول", "الفرق"), "📊"),
+    (("خلاصة", "ملخص", "مراجعة"), "📌"),
+)
+
+
+def section_emoji(title: str) -> str:
+    """يختار رمزا مناسبا لعنوان القسم (هوية بصرية موحّدة)."""
+    low = (title or "").lower()
+    for keys, emoji in _SECTION_STYLES:
+        if any(k in low for k in keys):
+            return emoji
+    return "📘"
+
+
+def render_section(
+    title: str, body: str, emoji: str | None = None, index: int | None = None
+) -> str:
+    """قسم عام بعنوان مرقّم ورمز ملوّن."""
     if not body or not body.strip():
+        return ""
+    emoji = emoji or section_emoji(title)
+    head = f"{emoji} <b>{esc(title)}</b>"
+    if index:
+        head = f"{index}️⃣ {head}"
+    return "\n".join([
+        "",
+        head,
+        SEP,
+        body,
+    ])
+
+
+def render_further_reading(items) -> str:
+    """مصادر للتوسّع — تعمّق إضافي بعد الدرس."""
+    items = [x for x in (items or []) if str(x).strip()]
+    if not items:
         return ""
     return "\n".join([
         "",
-        f"{emoji} <b>{esc(title)}</b>",
+        f"{EMOJI['book']} <b>للتوسّع أكثر</b>",
         SEP,
-        body,
+        _bullets(items, emoji="📖"),
     ])
 
 
