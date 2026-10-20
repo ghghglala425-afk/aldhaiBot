@@ -152,6 +152,18 @@ async def on_error(update: object, context) -> None:
             )
         except Exception:
             pass
+        # تفاصيل إضافية للمشرف — تظهر في سجل Railway
+        try:
+            for admin_id in settings.admin_ids:
+                await context.bot.send_message(
+                    admin_id,
+                    "⚠️ <b>خطأ في معالجة تحديث</b>\n"
+                    f"<code>{type(err).__name__}</code>\n"
+                    f"<pre>{str(err)[:600]}</pre>",
+                    parse_mode="HTML",
+                )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def post_init(app: Application) -> None:

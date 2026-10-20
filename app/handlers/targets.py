@@ -18,6 +18,7 @@ from core.db import SessionLocal
 from core.logging import get_logger
 from core.models import Lab
 from core.repo import get_user_by_telegram
+from app import tg
 
 log = get_logger("bot.targets")
 
@@ -29,7 +30,7 @@ async def _render(update: Update, context: ContextTypes.DEFAULT_TYPE, lab_id: in
         lab = await s.get(Lab, lab_id)
         user = await get_user_by_telegram(s, update.effective_user.id)
         if not lab:
-            await update.effective_message.reply_text("بيئة الهدف غير موجودة.")
+            await tg.send_text(update.effective_message, "بيئة الهدف غير موجودة.")
             return
         st = await svc.status(s, user, lab)
         ts = await svc.task_state(s, user, lab)
@@ -72,10 +73,10 @@ async def _render(update: Update, context: ContextTypes.DEFAULT_TYPE, lab_id: in
         )])
     text = "\n".join(lines)[:3900]
     if new:
-        await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN,
+        await tg.send_text(update.effective_message, text, parse_mode=ParseMode.MARKDOWN,
                                                   reply_markup=InlineKeyboardMarkup(rows))
     else:
-        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN,
+        await tg.edit_text(update.callback_query, text, parse_mode=ParseMode.MARKDOWN,
                                                       reply_markup=InlineKeyboardMarkup(rows))
 
 
@@ -132,26 +133,26 @@ async def task_submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     order = context.user_data.pop("task_order", None)
     value = (update.message.text or "").strip()
     if not lab_id or not order:
-        await update.message.reply_text("جلسة منتهية. أعد فتح البيئة.")
+        await tg.send_text(update.message, "جلسة منتهية. أعد فتح البيئة.")
         return ConversationHandler.END
     async with SessionLocal() as s:
         lab = await s.get(Lab, lab_id)
         user = await get_user_by_telegram(s, update.effective_user.id)
         res = await svc.submit_task(s, user, lab, order, value)
     if not res.get("ok"):
-        await update.message.reply_text(f"⚠️ {res.get('error')}")
+        await tg.send_text(update.message, f"⚠️ {res.get('error')}")
     elif res.get("correct"):
         extra = " (سُجّلت سابقا)" if res.get("already") else f" +{res['xp']} نقطة"
-        await update.message.reply_text(f"✅ إجابة صحيحة!{extra}")
+        await tg.send_text(update.message, f"✅ إجابة صحيحة!{extra}")
     else:
-        await update.message.reply_text("❌ إجابة غير صحيحة. حاول مرة أخرى.")
+        await tg.send_text(update.message, "❌ إجابة غير صحيحة. حاول مرة أخرى.")
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("task_lab", None)
     context.user_data.pop("task_order", None)
-    await update.message.reply_text("تم الإلغاء.")
+    await tg.send_text(update.message, "تم الإلغاء.")
     return ConversationHandler.END
 
 

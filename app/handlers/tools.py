@@ -19,6 +19,7 @@ from core.db import SessionLocal
 from core.logging import get_logger
 from core.proxy import ProxyError, decode, send
 from core.repo import get_user_by_telegram
+from app import tg
 
 log = get_logger("bot.tools")
 
@@ -64,7 +65,7 @@ async def tools_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     if not await ratelimit.guard(update, "tools"):
         return ConversationHandler.END
-    await update.message.reply_text(MENU_TEXT, parse_mode=ParseMode.MARKDOWN, reply_markup=_menu_kb())
+    await tg.send_text(update.message, MENU_TEXT, parse_mode=ParseMode.MARKDOWN, reply_markup=_menu_kb())
     return AWAIT_ACTION
 
 
@@ -74,10 +75,10 @@ async def got_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     action = q.data.split(":", 1)[1]
     if action == "decoder":
         context.user_data["t_mode"] = "decode"
-        await q.edit_message_text("🔐 اختر العملية:", reply_markup=_ops_kb())
+        await tg.edit_text(q, "🔐 اختر العملية:", reply_markup=_ops_kb())
         return AWAIT_ACTION
     context.user_data["t_mode"] = "repeater"
-    await q.edit_message_text(
+    await tg.edit_text(q, 
         "🔁 أرسل الطلب بصيغة:\n`GET https://example.com/`\nأو مع جسم:\n`POST https://example.com | a=1&b=2`"
     )
     return AWAIT_REQ
@@ -88,7 +89,7 @@ async def got_op(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await q.answer()
     op = q.data.split(":", 1)[1]
     context.user_data["t_op"] = op
-    await q.edit_message_text("✍️ أرسل القيمة المطلوب معالجتها (اكتب /cancel للإلغاء):")
+    await tg.edit_text(q, "✍️ أرسل القيمة المطلوب معالجتها (اكتب /cancel للإلغاء):")
     return AWAIT_VALUE
 
 
@@ -97,11 +98,11 @@ async def got_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     value = update.message.text or ""
     res = decode(op, value)
     if res.get("ok"):
-        await update.message.reply_text(
+        await tg.send_text(update.message, 
             f"✅ النتيجة:\n<pre>{esc(str(res['result'])[:3500])}</pre>", parse_mode=ParseMode.HTML
         )
     else:
-        await update.message.reply_text(f"⚠️ {res.get('error')}")
+        await tg.send_text(update.message, f"⚠️ {res.get('error')}")
     return ConversationHandler.END
 
 
@@ -119,9 +120,9 @@ async def got_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     elif parts:
         url = parts[0]
     if not url:
-        await update.message.reply_text("صيغة غير صحيحة. مثال: GET https://example.com/")
+        await tg.send_text(update.message, "صيغة غير صحيحة. مثال: GET https://example.com/")
         return ConversationHandler.END
-    msg = await update.message.reply_text("⏳ أُرسل الطلب…")
+    msg = await tg.send_text(update.message, "⏳ أُرسل الطلب…")
     async with SessionLocal() as s:
         user = await get_user_by_telegram(s, update.effective_user.id)
         try:
@@ -141,14 +142,14 @@ async def got_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     try:
         await msg.edit_text(out[:3900], parse_mode=ParseMode.HTML)
     except Exception:  # noqa: BLE001
-        await update.message.reply_text(out[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(update.message, out[:3900], parse_mode=ParseMode.HTML)
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("t_mode", None)
     context.user_data.pop("t_op", None)
-    await update.message.reply_text("تم الإلغاء.")
+    await tg.send_text(update.message, "تم الإلغاء.")
     return ConversationHandler.END
 
 

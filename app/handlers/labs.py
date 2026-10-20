@@ -19,6 +19,7 @@ from core.learning import labs_for_lesson, reveal_hint, submit_flag
 from core.logging import get_logger
 from core.models import Hint, Lab
 from core.repo import get_user_by_telegram
+from app import tg
 
 log = get_logger("bot.labs")
 
@@ -32,7 +33,7 @@ async def lab_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as s:
         labs = await labs_for_lesson(s, lesson_id)
     if not labs:
-        await q.edit_message_text("لا توجد مختبرات لهذا الدرس.")
+        await tg.edit_text(q, "لا توجد مختبرات لهذا الدرس.")
         return
     rows = [
         [
@@ -43,7 +44,7 @@ async def lab_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         ]
         for l in labs
     ]
-    await q.edit_message_text("🧪 المختبرات وبيئات الهدف المتاحة:", reply_markup=InlineKeyboardMarkup(rows))
+    await tg.edit_text(q, "🧪 المختبرات وبيئات الهدف المتاحة:", reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def lab_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -53,7 +54,7 @@ async def lab_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as s:
         lab = await s.get(Lab, lab_id)
         if not lab:
-            await q.edit_message_text("المختبر غير موجود.")
+            await tg.edit_text(q, "المختبر غير موجود.")
             return
         hints = list(
             (await s.execute(select(Hint).where(Hint.lab_id == lab_id).order_by(Hint.order_index))).scalars().all()
@@ -66,7 +67,7 @@ async def lab_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     rows = [[InlineKeyboardButton("🚩 إرسال العلم", callback_data=f"flag:{lab.id}")]]
     for i, h in enumerate(hints):
         rows.append([InlineKeyboardButton(f"💡 تلميح {i + 1} ({h.cost_xp} نقطة)", callback_data=f"hint:{lab.id}:{i}")])
-    await q.edit_message_text(text[:3900], parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
+    await tg.edit_text(q, text[:3900], parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def hint_reveal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -117,7 +118,7 @@ async def flag_submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("flag_lab", None)
-    await update.message.reply_text("تم الإلغاء.")
+    await tg.send_text(update.message, "تم الإلغاء.")
     return ConversationHandler.END
 
 

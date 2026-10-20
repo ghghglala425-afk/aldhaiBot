@@ -11,6 +11,7 @@ from core.config import settings
 from core.db import SessionLocal
 from core.logging import get_logger
 from core.models import Course, Lab, Lesson, Progress, Submission, User
+from app import tg
 
 log = get_logger("bot.admin")
 
@@ -30,7 +31,7 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         passed = await s.scalar(select(func.count()).select_from(Progress).where(Progress.status == "passed"))
         labs = await s.scalar(select(func.count()).select_from(Lab))
         solved = await s.scalar(select(func.count()).select_from(Submission).where(Submission.is_correct.is_(True)))
-    await update.message.reply_text(
+    await tg.send_text(update.message, 
         "📊 *إحصاءات المنصّة*\n"
         f"المستخدمون: {users}\n"
         f"الكورسات: {courses}\n"
@@ -46,7 +47,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     text = update.message.text.partition(" ")[2].strip()
     if not text:
-        await update.message.reply_text("الصيغة: /broadcast نص الرسالة")
+        await tg.send_text(update.message, "الصيغة: /broadcast نص الرسالة")
         return
     async with SessionLocal() as s:
         ids = list((await s.execute(select(User.telegram_id).where(User.telegram_id.is_not(None)))).scalars().all())
@@ -57,7 +58,7 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             sent += 1
         except Exception:  # noqa: BLE001
             continue
-    await update.message.reply_text(f"✅ أُرسل إلى {sent} مستخدم.")
+    await tg.send_text(update.message, f"✅ أُرسل إلى {sent} مستخدم.")
 
 
 async def build_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -70,7 +71,7 @@ async def build_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sub = args[0].lower() if args else "status"
 
     if not settings.ai_configured and sub not in {"status"}:
-        await update.message.reply_text(
+        await tg.send_text(update.message, 
             "⚠️ لا يوجد مزوّد AI مضبوط — لا يمكن التوليد.\n"
             "فعّل AI_FREE_MODE=1 مع GEMINI_API_KEY/GROQ_API_KEY، "
             "أو اضبط AI_API_KEY لنقطة نهاية OpenAI-متوافقة."
@@ -80,7 +81,7 @@ async def build_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as s:
         if sub in {"status", ""}:
             st = await jobs.queue_stats(s)
-            await update.message.reply_text(
+            await tg.send_text(update.message, 
                 "🧱 *طابور التوليد*\n"
                 f"منتظر: {st['queued']} · قيد التنفيذ: {st['running']}\n"
                 f"مكتمل: {st['done']} · فشل: {st['failed']}\n"
@@ -94,20 +95,20 @@ async def build_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         elif sub == "all":
             n = await jobs.enqueue_all_languages(s)
-            await update.message.reply_text(f"✅ أُدرج {n} مخطط لغة في الطابور.")
+            await tg.send_text(update.message, f"✅ أُدرج {n} مخطط لغة في الطابور.")
         elif sub == "retry":
             n = await jobs.retry_failed(s)
-            await update.message.reply_text(f"♻️ أُعيد إدراج {n} مهمة فاشلة.")
+            await tg.send_text(update.message, f"♻️ أُعيد إدراج {n} مهمة فاشلة.")
         elif sub == "warm":
             lang = args[1] if len(args) > 1 else ""
             if not lang:
-                await update.message.reply_text("الصيغة: /build warm <lang>")
+                await tg.send_text(update.message, "الصيغة: /build warm <lang>")
                 return
             n = await jobs.enqueue_warm(s, lang)
-            await update.message.reply_text(f"🔥 أُدرج تسخين {n} درسا للغة {lang}.")
+            await tg.send_text(update.message, f"🔥 أُدرج تسخين {n} درسا للغة {lang}.")
         else:
             job = await jobs.enqueue_outline(s, sub)
-            await update.message.reply_text(
+            await tg.send_text(update.message, 
                 f"✅ أُدرج مخطط اللغة {sub}." if job else f"⏳ مخطط {sub} قيد التنفيذ بالفعل."
             )
 

@@ -17,6 +17,7 @@ from sqlalchemy import select
 from core.db import SessionLocal
 from core.logging import get_logger
 from core.models import Discussion, Lesson, User
+from app import tg
 
 log = get_logger("bot.qa")
 
@@ -44,7 +45,7 @@ async def _render(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id:
             if u:
                 names[uid] = u.username or (u.email or "مستخدم")[:14]
     if not lesson:
-        await update.effective_message.reply_text("الدرس غير موجود.")
+        await tg.send_text(update.effective_message, "الدرس غير موجود.")
         return
     lines = [f"💬 *نقاش الدرس:* {lesson.title}", ""]
     rows: list[list[InlineKeyboardButton]] = [
@@ -57,7 +58,7 @@ async def _render(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id:
         tag = f"  (↩️ {replies[r.id]})" if replies.get(r.id) else ""
         lines.append(f"❓ *{who}*{tag}\n{r.body[:300]}")
         rows.append([InlineKeyboardButton(f"↩️ اجِب: {r.body[:34]}", callback_data=f"qaans:{r.id}")])
-    await update.effective_message.reply_text(
+    await tg.send_text(update.effective_message, 
         "\n".join(lines)[:3900], parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows)
     )
 
@@ -94,7 +95,7 @@ async def qa_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = context.user_data.pop("qa", None)
     body = (update.message.text or "").strip()
     if not data or not body:
-        await update.message.reply_text("لا يمكن حفظ نص فارغ.")
+        await tg.send_text(update.message, "لا يمكن حفظ نص فارغ.")
         return ConversationHandler.END
     tg_id = update.effective_user.id
     async with SessionLocal() as s:
@@ -102,20 +103,20 @@ async def qa_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
         user = await get_user_by_telegram(s, tg_id)
         if not user:
-            await update.message.reply_text("سجّل دخولك أولا عبر /start.")
+            await tg.send_text(update.message, "سجّل دخولك أولا عبر /start.")
             return ConversationHandler.END
         s.add(Discussion(
             lesson_id=data["lesson_id"], user_id=user.id,
             parent_id=data.get("parent_id"), body=body[:2000],
         ))
         await s.commit()
-    await update.message.reply_text("✅ نُشر مشاركتك في النقاش.")
+    await tg.send_text(update.message, "✅ نُشر مشاركتك في النقاش.")
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("qa", None)
-    await update.message.reply_text("تم الإلغاء.")
+    await tg.send_text(update.message, "تم الإلغاء.")
     return ConversationHandler.END
 
 

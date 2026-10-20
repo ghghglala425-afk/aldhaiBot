@@ -18,6 +18,7 @@ from core.learning import get_progress
 from core.logging import get_logger
 from core.models import Lesson, User
 from core.repo import get_user_by_telegram
+from app import tg
 
 log = get_logger("bot.tools2")
 
@@ -35,7 +36,7 @@ async def study_hub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as s:
         user = await _user(s, tg_id)
         if not user:
-            await update.message.reply_text("سجّل دخولك أولا عبر /start.")
+            await tg.send_text(update.message, "سجّل دخولك أولا عبر /start.")
             return
         from core.learn_features import due_reviews, study_statistics
 
@@ -67,7 +68,7 @@ async def study_hub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         [InlineKeyboardButton("📅 خطّطتي الأسبوعية", callback_data="x:plan"),
          InlineKeyboardButton("💪 نقاط قوتي", callback_data="x:skills")],
     ]
-    await update.message.reply_text(
+    await tg.send_text(update.message, 
         "\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -82,26 +83,26 @@ async def review_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     async with SessionLocal() as s:
         user = await _user(s, tg_id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا.")
+            await tg.edit_text(q, "سجّل دخولك أولا.")
             return
         from core.learn_features import due_reviews
 
         due = await due_reviews(s, user.id, limit=5)
 
     if not due:
-        await q.edit_message_text(
+        await tg.edit_text(q, 
             "✅ لا توجد مراجعات مستحقة الآن. تعلّم دروسا جديدة وستعود للمراجعة تلقائيا.",
             parse_mode=ParseMode.HTML,
         )
         return
 
     context.user_data["review"] = {"items": [d["lesson"].id for d in due], "i": 0}
-    await q.edit_message_text("🔁 <b>المراجعة المتباعدة</b>\nاختر درسا للمراجعة:", parse_mode=ParseMode.HTML)
+    await tg.edit_text(q, "🔁 <b>المراجعة المتباعدة</b>\nاختر درسا للمراجعة:", parse_mode=ParseMode.HTML)
     rows = [
         [InlineKeyboardButton(f"{i+1}. {lv.esc(d['lesson'].title[:34])}", callback_data=f"x:rv:{d['lesson'].id}")]
         for i, d in enumerate(due)
     ]
-    await update.effective_message.reply_text(
+    await tg.send_text(update.effective_message, 
         "👇 اختر:", reply_markup=InlineKeyboardMarkup(rows)
     )
 
@@ -115,14 +116,14 @@ async def review_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     async with SessionLocal() as s:
         user = await _user(s, tg_id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا.")
+            await tg.edit_text(q, "سجّل دخولك أولا.")
             return
         from core.learn_features import build_flashcards
 
         cards = await build_flashcards(s, lesson_id, limit=10)
 
     if not cards:
-        await q.edit_message_text("لا توجد أسئلة مراجعة لهذا الدرس.")
+        await tg.edit_text(q, "لا توجد أسئلة مراجعة لهذا الدرس.")
         return
     context.user_data["flash"] = {"cards": cards, "i": 0, "revealed": False, "lesson_id": lesson_id}
     await _render_card(update, context)
@@ -143,7 +144,7 @@ async def _render_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ])
     if st["i"] > 0:
         kb.append([InlineKeyboardButton("⬅️ السابقة", callback_data="x:cardprev")])
-    await update.effective_message.reply_text(
+    await tg.send_text(update.effective_message, 
         text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -153,7 +154,7 @@ async def card_reveal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await q.answer()
     st = context.user_data.get("flash")
     if not st:
-        await q.edit_message_text("انتهت الجلسة.")
+        await tg.edit_text(q, "انتهت الجلسة.")
         return
     st["revealed"] = True
     await _render_card(update, context)
@@ -164,7 +165,7 @@ async def card_prev(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await q.answer()
     st = context.user_data.get("flash")
     if not st:
-        await q.edit_message_text("انتهت الجلسة.")
+        await tg.edit_text(q, "انتهت الجلسة.")
         return
     st["i"] = max(0, st["i"] - 1)
     st["revealed"] = False
@@ -176,14 +177,14 @@ async def card_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await q.answer()
     st = context.user_data.get("flash")
     if not st:
-        await q.edit_message_text("انتهت الجلسة.")
+        await tg.edit_text(q, "انتهت الجلسة.")
         return
     if st["i"] + 1 < len(st["cards"]):
         st["i"] += 1
         st["revealed"] = False
         await _render_card(update, context)
     else:
-        await q.edit_message_text("✅ انتهت بطاقات المراجعة.", parse_mode=ParseMode.HTML)
+        await tg.edit_text(q, "✅ انتهت بطاقات المراجعة.", parse_mode=ParseMode.HTML)
         context.user_data.pop("flash", None)
 
 
@@ -193,7 +194,7 @@ async def card_rate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await q.answer()
     st = context.user_data.get("flash")
     if not st:
-        await q.edit_message_text("انتهت الجلسة.")
+        await tg.edit_text(q, "انتهت الجلسة.")
         return
     quality = int(q.data.split(":")[3])
     tg_id = update.effective_user.id
@@ -206,7 +207,7 @@ async def card_rate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             nxt = res.get("next_review", "")
             interval = res.get("interval", 1)
     context.user_data.pop("flash", None)
-    await q.edit_message_text(
+    await tg.edit_text(q, 
         f"✅ سُجّل تقييمك. المراجعة القادمة بعد <b>{interval}</b> يوم ({lv.esc(nxt)}).",
         parse_mode=ParseMode.HTML,
     )
@@ -222,7 +223,7 @@ async def deep_dive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as s:
         user = await _user(s, tg_id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا.")
+            await tg.edit_text(q, "سجّل دخولك أولا.")
             return
         from core.learning import ordered_lessons, status_map
         from core.models import Course
@@ -235,7 +236,7 @@ async def deep_dive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if r["status"] == "passed":
                     candidates.append(r["lesson"])
         if not candidates:
-            await q.edit_message_text("🕓 أكمل درسا أولا ثم استعمل الغوص العميق.")
+            await tg.edit_text(q, "🕓 أكمل درسا أولا ثم استعمل الغوص العميق.")
             return
         lesson = random.choice(candidates)
 
@@ -246,7 +247,7 @@ async def deep_dive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             InlineKeyboardButton("🔬 عميق", callback_data=f"x:deep:{lesson.id}:deep"),
         ]
     ]
-    await q.edit_message_text(
+    await tg.edit_text(q, 
         f"🔬 <b>الغوص العميق</b>\nاختر مستوى الشرح لدرس <b>{lv.esc(lesson.title)}</b>:",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(kb),
@@ -262,10 +263,10 @@ async def deep_dive_show(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         res = await deep_dive(s, int(lesson_id), level)
     if not res.get("ok"):
-        await q.edit_message_text(res.get("error", "خطأ"))
+        await tg.edit_text(q, res.get("error", "خطأ"))
         return
     text = f"━━━━━━━━━━━━━━━━━━━━━\n{res['title']}\n━━━━━━━━━━━━━━━━━━━━━\n\n{res['body']}"
-    await update.effective_message.reply_text(
+    await tg.send_text(update.effective_message, 
         text[:3900], parse_mode=ParseMode.HTML, disable_web_page_preview=True
     )
 
@@ -280,14 +281,14 @@ async def challenge_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     async with SessionLocal() as s:
         user = await _user(s, tg_id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا.")
+            await tg.edit_text(q, "سجّل دخولك أولا.")
             return
         from core.learn_features import daily_challenge
 
         ch = await daily_challenge(s, user.id)
 
     if not ch.get("ok"):
-        await q.edit_message_text(f"🎲 {ch.get('error')}")
+        await tg.edit_text(q, f"🎲 {ch.get('error')}")
         return
     context.user_data["challenge"] = ch
     opts = ch["options"]
@@ -296,7 +297,7 @@ async def challenge_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                               callback_data=f"x:chans:{ch['question_id']}:{o['id']}")]
         for o in opts
     ]
-    await q.edit_message_text(
+    await tg.edit_text(q, 
         f"🎲 <b>تحدّي اليوم</b>\n📚 {lv.esc(ch['lesson_title'])}\n\n❓ {lv.esc(ch['text'])}",
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(kb),
@@ -308,7 +309,7 @@ async def challenge_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await q.answer()
     ch = context.user_data.get("challenge")
     if not ch:
-        await q.edit_message_text("انتهى التحدي.")
+        await tg.edit_text(q, "انتهى التحدي.")
         return
     _, _, qid, oid = q.data.split(":")
     chosen = int(oid)
@@ -319,7 +320,7 @@ async def challenge_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     msg = f"{icon} <b>{'إجابة صحيحة!' if ok else 'إجابة خاطئة.'}</b>"
     if not ok:
         msg += f"\n✅ الصحيحة: {lv.esc(correct_text)}"
-    await q.edit_message_text(msg, parse_mode=ParseMode.HTML)
+    await tg.edit_text(q, msg, parse_mode=ParseMode.HTML)
     context.user_data.pop("challenge", None)
 
 
@@ -333,7 +334,7 @@ async def weekly_plan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     async with SessionLocal() as s:
         user = await _user(s, tg_id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا.")
+            await tg.edit_text(q, "سجّل دخولك أولا.")
             return
         from core.learn_features import weekly_plan
 
@@ -350,7 +351,7 @@ async def weekly_plan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             lines.append(f"  ▫️ {lv.esc(lsn['title'][:46])} <i>({lsn['minutes']} د)</i>")
     if total_min:
         lines += ["", f"⏱️ الإجمالي: <b>{total_min}</b> دقيقة (~{total_min // 60} ساعة)"]
-    await q.edit_message_text("\n".join(lines)[:3900], parse_mode=ParseMode.HTML)
+    await tg.edit_text(q, "\n".join(lines)[:3900], parse_mode=ParseMode.HTML)
 
 
 async def skills_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -360,14 +361,14 @@ async def skills_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     async with SessionLocal() as s:
         user = await _user(s, tg_id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا.")
+            await tg.edit_text(q, "سجّل دخولك أولا.")
             return
         from core.learn_features import skill_breakdown
 
         res = await skill_breakdown(s, user.id)
 
     if not res.get("ok"):
-        await q.edit_message_text(f"💪 {res.get('error')}")
+        await tg.edit_text(q, f"💪 {res.get('error')}")
         return
     lines = [
         "━━━━━━━━━━━━━━━━━━━━━",
@@ -381,7 +382,7 @@ async def skills_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         lines += ["", "🔁 <b>راجع هذه الدروس:</b>"]
         for w in res["weak_lessons"]:
             lines.append(f"  ▫️ {lv.esc(w['title'])} <i>({w['score']}%)</i>")
-    await q.edit_message_text("\n".join(lines)[:3900], parse_mode=ParseMode.HTML)
+    await tg.edit_text(q, "\n".join(lines)[:3900], parse_mode=ParseMode.HTML)
 
 
 # =============================================================================

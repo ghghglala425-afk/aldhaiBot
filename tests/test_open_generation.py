@@ -48,29 +48,25 @@ class TestGenerationOpenToAll:
 
 
 class TestQuotaProtection:
-    """الحصة المجانية محدودة — نحدّ الطلبات لكل مستخدم."""
+    """الحصة المجانية محدودة — الحماية عبر سقف الطابور العام وحصص المزوّد."""
 
-    def test_rate_limits_exist_for_generation(self) -> None:
-        assert "outline" in ratelimit.LIMITS
-        assert "warm" in ratelimit.LIMITS
-        assert "gen" in ratelimit.LIMITS
-
-    def test_generation_limits_are_hourly(self) -> None:
+    def test_generation_is_not_rate_limited(self) -> None:
+        """التوليد متاح بلا حدود زمنية (حسب طلب المستخدم)."""
         for key in ("outline", "warm", "gen"):
-            count, window = ratelimit.LIMITS[key]
-            assert window == 3600, f"{key} must use an hourly window"
-            assert count > 0
+            assert key not in ratelimit.LIMITS, f"{key} must not be rate limited"
 
-    def test_outline_limit_is_reasonable(self) -> None:
-        assert ratelimit.LIMITS["outline"][0] == 3
-
-    def test_handlers_use_the_rate_limiter(self) -> None:
+    def test_handlers_do_not_guard_generation(self) -> None:
         for name, marker in (
             ("languages.py", 'ratelimit.guard(update, "outline")'),
             ("languages.py", 'ratelimit.guard(update, "warm")'),
             ("learn.py", 'ratelimit.guard(update, "gen")'),
         ):
-            assert marker in _src(name), f"{name} must use {marker}"
+            assert marker not in _src(name), f"{name} must not limit {marker}"
+
+    def test_other_actions_are_still_limited(self) -> None:
+        """الميزات المكلفة الأخرى تبقى محدودة."""
+        for key in ("ask", "run", "search", "tools"):
+            assert key in ratelimit.LIMITS, f"{key} must stay rate limited"
 
     def test_non_admin_warms_fewer_lessons(self) -> None:
         """المستخدم العادي يسخّن دروسا أقل من المشرف."""
@@ -82,6 +78,14 @@ class TestQuotaProtection:
         from core.config import settings
 
         assert settings.GEN_QUEUE_MAX > 0, "the global queue cap must stay on"
+
+    def test_wait_message_is_human_readable(self) -> None:
+        from app.ratelimit import human_wait
+
+        assert "3511" not in human_wait(3511), "never show raw seconds"
+        assert "دقيقة" in human_wait(3511), "3511s is about 59 minutes"
+        assert "ساعة" in human_wait(7200), "7200s is 2 hours"
+        assert "ثانية" in human_wait(30)
 
 
 class TestOutlineGuards:

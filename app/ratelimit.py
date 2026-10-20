@@ -15,17 +15,29 @@ from telegram import Update
 _hits: dict[tuple[str, int], list[float]] = defaultdict(list)
 
 # الحدود: (عدد الطلبات, النافذة بالثواني)
+# ملاحظة: توليد المحتوى (outline/warm/gen) غير مقيّد هنا عمدا —
+# الحماية تتم بسقف الطابور العام GEN_QUEUE_MAX وبحصص مزوّد AI،
+# فلا نعطل المستخدم برسالة «طلبات كثيرة».
 LIMITS: dict[str, tuple[int, int]] = {
     "ask": (12, 300),
     "run": (10, 300),
     "search": (30, 300),
     "tools": (20, 300),
     "export": (20, 600),
-    # التوليد مكلف (يستهلك حصة AI المجانية) — نحدّه لكل مستخدم
-    "outline": (3, 3600),     # بناء مخطط لغة: 3 في الساعة
-    "warm": (2, 3600),       # تسخين دروس: 2 في الساعة
-    "gen": (20, 3600),       # توليد درس واحد: 20 في الساعة
 }
+
+
+def human_wait(seconds: int) -> str:
+    """يحوّل ثواني الانتظار إلى نص مفهوم."""
+    if seconds <= 0:
+        return "بعد لحظات"
+    if seconds < 60:
+        return f"بعد {seconds} ثانية"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"بعد {minutes} دقيقة"
+    hours = round(minutes / 60)
+    return f"بعد {hours} ساعة"
 
 
 def allow(user_id: int, key: str) -> bool:
@@ -65,7 +77,12 @@ async def guard(update: Update, key: str) -> bool:
     wait = retry_in(user.id, key)
     msg = update.effective_message
     if msg:
-        await msg.reply_text(f"⏳ طلبات كثيرة. انتظر {wait} ثانية ثم أعد المحاولة.")
+        try:
+            await msg.reply_text(
+                f"⏳ طلبات كثيرة — {human_wait(wait)} ثم أعد المحاولة."
+            )
+        except Exception:  # noqa: BLE001
+            pass
     return False
 
 

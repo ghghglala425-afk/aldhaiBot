@@ -16,6 +16,7 @@ from sqlalchemy import or_, select
 from core.db import SessionLocal
 from core.logging import get_logger
 from core.models import CodeSample, Course, Language, Lesson
+from app import tg
 
 log = get_logger("bot.search")
 
@@ -51,7 +52,7 @@ async def _render(update: Update, term: str) -> None:
     res = await _search(term)
     total = sum(len(v) for v in res.values())
     if not total:
-        await update.effective_message.reply_text(f"🔎 لا نتائج لـ «{term}».")
+        await tg.send_text(update.effective_message, f"🔎 لا نتائج لـ «{term}».")
         return
     lines = [f"🔎 *نتائج «{term}»*", ""]
     rows: list[list[InlineKeyboardButton]] = []
@@ -71,7 +72,7 @@ async def _render(update: Update, term: str) -> None:
         lines.append("\n*الأكواد:*")
         lines.extend(f"• {c.title}" for c in res["codes"])
         rows.extend([[InlineKeyboardButton(f"💻 {c.title[:46]}", callback_data=f"code:{c.id}")] for c in res["codes"][:5]])
-    await update.effective_message.reply_text(
+    await tg.send_text(update.effective_message, 
         "\n".join(lines)[:3900],
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(rows) if rows else None,
@@ -83,7 +84,7 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if term:
         await _render(update, term)
         return ConversationHandler.END
-    await update.message.reply_text("🔎 أرسل كلمة البحث (اكتب /cancel للإلغاء):")
+    await tg.send_text(update.message, "🔎 أرسل كلمة البحث (اكتب /cancel للإلغاء):")
     return AWAIT_QUERY
 
 
@@ -93,7 +94,7 @@ async def got_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("تم الإلغاء.")
+    await tg.send_text(update.message, "تم الإلغاء.")
     return ConversationHandler.END
 
 

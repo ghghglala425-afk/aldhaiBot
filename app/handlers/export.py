@@ -11,6 +11,7 @@ from sqlalchemy import select
 from core.db import SessionLocal
 from core.logging import get_logger
 from core.models import CodeSample, Lesson, Option, Question, Quiz, Stage, Lab
+from app import tg
 
 log = get_logger("bot.export")
 
@@ -123,7 +124,7 @@ async def _send_export(update: Update, lesson_id: int) -> None:
         return
     res = await build_markdown(lesson_id)
     if not res:
-        await update.effective_message.reply_text("الدرس غير موجود.")
+        await tg.send_text(update.effective_message, "الدرس غير موجود.")
         return
     text, filename = res
     buf = io.BytesIO(text.encode("utf-8"))
@@ -142,7 +143,7 @@ async def export_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def export_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     arg = (update.message.text or "").partition(" ")[2].strip()
     if not arg.isdigit():
-        await update.message.reply_text("الصيغة: /export رقم_الدرس (تجد الرقم بأمر /search أو داخل الكورس).")
+        await tg.send_text(update.message, "الصيغة: /export رقم_الدرس (تجد الرقم بأمر /search أو داخل الكورس).")
         return
     await _send_export(update, int(arg))
 

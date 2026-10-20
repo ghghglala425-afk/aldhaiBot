@@ -9,6 +9,7 @@ from core import paths as svc
 from core.db import SessionLocal
 from core.logging import get_logger
 from core.repo import get_user_by_telegram
+from app import tg
 
 log = get_logger("bot.paths")
 
@@ -17,19 +18,19 @@ async def paths_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as s:
         user = await get_user_by_telegram(s, update.effective_user.id)
         if not user:
-            await update.effective_message.reply_text("سجّل دخولك أولا عبر /start.")
+            await tg.send_text(update.effective_message, "سجّل دخولك أولا عبر /start.")
             return
         rows = await svc.list_paths(s)
         data = [await svc.path_progress(s, user, p) for p in rows]
     if not data:
-        await update.effective_message.reply_text("لا توجد مسارات بعد.")
+        await tg.send_text(update.effective_message, "لا توجد مسارات بعد.")
         return
     lines = ["🛤️ *المسارات التعلّمية:*\n"]
     for d in data:
         lines.append(f"{d['icon'] or '•'} *{d['title']}* — {d['percent']}% ({d['passed']}/{d['total']})")
     kb = [[InlineKeyboardButton(f"{d['icon'] or '•'} {d['title']}", callback_data=f"path:{d['slug']}")]
           for d in data]
-    await update.effective_message.reply_text(
+    await tg.send_text(update.effective_message, 
         "\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb)
     )
 
@@ -42,7 +43,7 @@ async def path_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         user = await get_user_by_telegram(s, update.effective_user.id)
         path = await svc.get_path(s, slug)
         if not path or not user:
-            await q.edit_message_text("غير متاح.")
+            await tg.edit_text(q, "غير متاح.")
             return
         d = await svc.path_progress(s, user, path)
     text = (
@@ -52,7 +53,7 @@ async def path_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     if d["certificate"]:
         text += f"\n🎓 شهادة المسار: `{d['certificate']}`"
-    await q.edit_message_text(text, parse_mode="Markdown")
+    await tg.edit_text(q, text, parse_mode="Markdown")
 
 
 def register_handlers(app) -> None:

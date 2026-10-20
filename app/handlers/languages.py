@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """تصفّح اللغات العالمية (48 لغة) ومراحلها ودروسها المخطّطة."""
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from core.db import SessionLocal
 from core.logging import get_logger
 from core.models import Course, Language, Lesson, Stage
 from pipeline.taxonomy import iter_language_lessons, language_course_slug, language_icon
+from app import tg
 
 log = get_logger("bot.languages")
 
@@ -41,7 +42,7 @@ async def _lang_rows() -> list[dict]:
 async def languages_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     langs = await _lang_rows()
     if not langs:
-        await update.effective_message.reply_text("لا توجد لغات مسجّلة. شغّل البذور (seed).")
+        await tg.send_text(update.effective_message, "لا توجد لغات مسجّلة. شغّل البذور (seed).")
         return
     pages = total_pages(len(langs), LANGS_PER_PAGE)
     text = (
@@ -49,7 +50,7 @@ async def languages_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"الإجمالي: {len(langs)} لغة — اختر لغة لعرض مسارها الكامل "
         f"({settings.lessons_per_language} درس/لغة)."
     )
-    await update.effective_message.reply_text(
+    await tg.send_text(update.effective_message, 
         text, parse_mode=ParseMode.MARKDOWN, reply_markup=languages_kb(langs, 0, pages, LANGS_PER_PAGE)
     )
 
@@ -86,7 +87,7 @@ async def language_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     "ready": sum(1 for r in rows if r.status in {"published", "verified"}),
                 }
     if not lang:
-        await q.edit_message_text("اللغة غير موجودة.")
+        await tg.edit_text(q, "اللغة غير موجودة.")
         return
     name_ar = lang.name_ar or lang.name
     icon = language_icon(lang.slug, lang.paradigm)
@@ -95,7 +96,7 @@ async def language_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     ready = sum(c["ready"] for c in counts.values())
 
     lines = [
-        f"{icon} *إتقان {name_ar}*",
+        f"{icon} *إتقان {tg.escape_md(name_ar)}*",
         f"النمط: {lang.paradigm or '—'} · الصعوبة: {lang.difficulty}",
         f"الدروس: {ready}/{total} جاهز" if built else f"المخطط: {settings.lessons_per_language} درس (غير مبني بعد)",
         "",
@@ -118,7 +119,7 @@ async def language_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         rows.append([InlineKeyboardButton("🧩 بناء المخطط", callback_data=f"langbuild:{slug}")])
     rows.append([InlineKeyboardButton("⬅️ كل اللغات", callback_data="langs:0")])
-    await q.edit_message_text(
+    await tg.edit_text(q, 
         "\n".join(lines)[:3900], parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows)
     )
 
@@ -144,7 +145,7 @@ async def stage_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 )).scalars().all()
             )
     if not stage or not lessons:
-        await q.edit_message_text("المرحلة غير متاحة.")
+        await tg.edit_text(q, "المرحلة غير متاحة.")
         return
     pages = total_pages(len(lessons), LESSONS_PER_PAGE)
     chunk = slice_page(lessons, page, LESSONS_PER_PAGE)
@@ -152,26 +153,21 @@ async def stage_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     rows: list[list[InlineKeyboardButton]] = []
     for l in chunk:
         icon = _STATUS_ICON.get(l.status, "•")
-        lines.append(f"{icon} {l.title}")
-        rows.append([InlineKeyboardButton(f"{icon} {l.title[:46]}", callback_data=f"lesson:{l.id}")])
+        lines.append(f"{icon} {tg.escape_md(l.title)}")
+        rows.append([InlineKeyboardButton(f"{icon} {tg.escape_md(l.title)[:46]}", callback_data=f"lesson:{l.id}")])
     rows.append(nav_row(f"langst:{slug}:{si}", page, pages))
     rows.append([InlineKeyboardButton("⬅️ رجوع", callback_data=f"lang:{slug}")])
-    await q.edit_message_text(
+    await tg.edit_text(q, 
         "\n".join(lines)[:3900], parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows)
     )
 
 
 async def language_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بناء مخطط اللغة — متاح لكل المستخدمين مع حدّ معدّل لكل مستخدم."""
+    """بناء مخطط اللغة — متاح لكل المستخدمين بلا حدود زمنية."""
     q = update.callback_query
     slug = q.data.split(":", 1)[1]
     if not settings.ai_configured:
         await q.answer("AI غير مضبوط — لا يمكن بناء المخطط.", show_alert=True)
-        return
-
-    from app import ratelimit
-
-    if not await ratelimit.guard(update, "outline"):
         return
 
     from pipeline import jobs
@@ -189,16 +185,11 @@ async def language_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def language_warm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """تسخين أول دروس اللغة — متاح لكل المستخدمين مع حدّ معدّل."""
+    """تسخين أول دروس اللغة — متاح لكل المستخدمين بلا حدود زمنية."""
     q = update.callback_query
     slug = q.data.split(":", 1)[1]
     if not settings.ai_configured:
         await q.answer("AI غير مضبوط.", show_alert=True)
-        return
-
-    from app import ratelimit
-
-    if not await ratelimit.guard(update, "warm"):
         return
 
     from pipeline import jobs

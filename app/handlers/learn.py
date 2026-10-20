@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """معالجات التعلّم: استعراض الكورسات والمراحل والدروس، وعرض الأكواد، وإجراء الاختبار."""
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ from core.logging import get_logger
 from core.config import settings
 from core.models import CodeSample, Course, Lesson, LessonAsset, Option, Question, Stage
 from core.repo import get_user_by_telegram
+from app import tg
 
 log = get_logger("bot.learn")
 
@@ -75,11 +76,11 @@ async def course_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     async with SessionLocal() as s:
         course = await s.get(Course, course_id)
         if not course:
-            await q.edit_message_text("الكورس غير موجود.")
+            await tg.edit_text(q, "الكورس غير موجود.")
             return
         user = await _user(s, update.effective_user.id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا عبر /start.")
+            await tg.edit_text(q, "سجّل دخولك أولا عبر /start.")
             return
         rows = await status_map(s, user, course_id)
         stages = list(
@@ -93,7 +94,7 @@ async def course_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     page = clamp_page(page, pages)
     chunk = slice_page(rows, page, COURSE_PER_PAGE)
 
-    lines = [f"*{course.title}*  ({page + 1}/{pages})", ""]
+    lines = [f"*{tg.escape_md(course.title)}*  ({page + 1}/{pages})", ""]
     buttons: list[list[InlineKeyboardButton]] = []
     current_stage = None
     for r in chunk:
@@ -101,7 +102,7 @@ async def course_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         st_title = stage_of.get(lsn.stage_id, "")
         if st_title != current_stage:
             current_stage = st_title
-            lines.append(f"\n— *{st_title}* —")
+            lines.append(f"\n— *{tg.escape_md(st_title)}* —")
         icon = _STATUS_ICON.get(r["status"], "•")
         if lsn.status == "outline":
             icon = "🕓"
@@ -109,11 +110,11 @@ async def course_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             icon = "⏳"
         elif r["status"] == STATUS_PASSED:
             icon = "✅"
-        lines.append(f"{icon} {lsn.title}")
-        buttons.append([InlineKeyboardButton(f"{icon} {lsn.title[:46]}", callback_data=f"lesson:{lsn.id}")])
+        lines.append(f"{icon} {tg.escape_md(lsn.title)}")
+        buttons.append([InlineKeyboardButton(f"{icon} {tg.escape_md(lsn.title)[:46]}", callback_data=f"lesson:{lsn.id}")])
     buttons.append(nav_row(f"course:{course_id}", page, pages))
     buttons.append([InlineKeyboardButton("⬅️ الكورسات", callback_data="courses:0")])
-    await q.edit_message_text(
+    await tg.edit_text(q, 
         "\n".join(lines)[:3900],
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup(buttons),
@@ -194,17 +195,17 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     async with SessionLocal() as s:
         lesson = await s.get(Lesson, lesson_id)
         if not lesson:
-            await q.edit_message_text("الدرس غير موجود.")
+            await tg.edit_text(q, "الدرس غير موجود.")
             return
         user = await _user(s, update.effective_user.id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا عبر /start.")
+            await tg.edit_text(q, "سجّل دخولك أولا عبر /start.")
             return
         # التحقق من فتح الدرس (الفتح المتسلسل)
         from core.learning import is_unlocked, ordered_lessons
 
         if not await is_unlocked(s, user, lesson):
-            await q.edit_message_text(
+            await tg.edit_text(q, 
                 "🔒 هذا الدرس مقفل. يجب إكمال الدرس السابق أولاً.",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -262,7 +263,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         progress_percent=progress_pct,
     )
     objectives = lv.render_objectives(lesson.objectives)
-    await update.effective_message.reply_text(
+    await tg.send_text(update.effective_message, 
         (header + objectives)[:3900], parse_mode=ParseMode.HTML, disable_web_page_preview=True
     )
 
@@ -271,7 +272,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             note = "🕓 هذا الدرس <b>مخطّط</b> — محتواه سيُولَّد تلقائيا عند تفعيل المساعد الذكي (AI)."
         else:
             note = "🕓 هذا الدرس <b>مخطّط</b> — المحتوى قيد التوليد في الخلفية. اضغط «🔄 تحديث» بعد قليل."
-        await update.effective_message.reply_text(note, parse_mode=ParseMode.HTML)
+        await tg.send_text(update.effective_message, note, parse_mode=ParseMode.HTML)
 
     # ---------- المحتوى ----------
     if lesson.content_md:
@@ -285,12 +286,12 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # ---------- نقاط المفتاح ----------
     key_points = lv.render_key_points(lesson.key_points or [])
     if key_points:
-        await update.effective_message.reply_text(key_points[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(update.effective_message, key_points[:3900], parse_mode=ParseMode.HTML)
 
     # ---------- خطّاف الذاكرة ----------
     hook = lv.render_memory_hook(lesson.memory_hook or "")
     if hook:
-        await update.effective_message.reply_text(hook[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(update.effective_message, hook[:3900], parse_mode=ParseMode.HTML)
 
     # ---------- الأكواد ----------
     if codes:
@@ -306,7 +307,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     sec_notes = list(dict.fromkeys(sec_notes))[:6]
     warn = lv.render_warnings(gotchas, sec_notes)
     if warn:
-        await update.effective_message.reply_text(warn[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(update.effective_message, warn[:3900], parse_mode=ParseMode.HTML)
 
     # ---------- بطاقة المراجعة ----------
     review = lv.render_review_card(
@@ -316,7 +317,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         next_step=next_title,
     )
     if review:
-        await update.effective_message.reply_text(review[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(update.effective_message, review[:3900], parse_mode=ParseMode.HTML)
 
     await _send_assets(update.effective_message, assets)
 
@@ -357,7 +358,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ]
     )
     buttons.append([InlineKeyboardButton("📤 تصدير الدرس", callback_data=f"export:{lesson_id}")])
-    await update.effective_message.reply_text(
+    await tg.send_text(update.effective_message, 
         "جاهز؟" if not is_outline else "الدرس مخطط حاليا 👆",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -380,16 +381,11 @@ async def _send_assets(message, assets: list[LessonAsset]) -> None:
 
 
 async def generate_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """توليد درس مخطط فورا — متاح لكل المستخدمين مع حدّ معدّل."""
+    """توليد درس مخطط فورا — متاح لكل المستخدمين بلا حدود زمنية."""
     q = update.callback_query
     lesson_id = int(q.data.split(":")[1])
     if not settings.ai_configured:
         await q.answer("AI غير مضبوط — تعذّر التوليد.", show_alert=True)
-        return
-
-    from app import ratelimit
-
-    if not await ratelimit.guard(update, "gen"):
         return
 
     from pipeline import jobs
@@ -489,7 +485,7 @@ async def quiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
         quiz = await s.scalar(select(Quiz).where(Quiz.lesson_id == lesson_id))
         if not quiz:
-            await q.edit_message_text("لا يوجد اختبار لهذا الدرس.")
+            await tg.edit_text(q, "لا يوجد اختبار لهذا الدرس.")
             return
         qids = list(
             (await s.execute(
@@ -497,7 +493,7 @@ async def quiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )).scalars().all()
         )
     context.user_data["quiz"] = {"lesson_id": lesson_id, "qids": qids, "i": 0, "resp": {}}
-    await q.edit_message_text("ابدأنا الاختبار 👇")
+    await tg.edit_text(q, "ابدأنا الاختبار 👇")
     await _render_question(update.effective_message, context)
 
 
@@ -558,7 +554,7 @@ async def quiz_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         lesson = await s.get(Lesson, lesson_id)
         user = await _user(s, update.effective_user.id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا.")
+            await tg.edit_text(q, "سجّل دخولك أولا.")
             return
         result = await submit_quiz(s, user, lesson, responses)
         cert = None
@@ -573,7 +569,7 @@ async def quiz_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         pass
     
     if not result.get("ok"):
-        await update.effective_message.reply_text(f"⚠️ {result.get('error')}")
+        await tg.send_text(update.effective_message, f"⚠️ {result.get('error')}")
         return
     
     if result["passed"]:
@@ -585,9 +581,9 @@ async def quiz_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             msg += "\n🏅 شارات جديدة: " + ", ".join(result["badges"])
         if cert:
             msg += f"\n🎓 شهادة إتمام الكورس: `{cert.code}`"
-        await update.effective_message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        await tg.send_text(update.effective_message, msg, parse_mode=ParseMode.MARKDOWN)
     else:
-        await update.effective_message.reply_text(
+        await tg.send_text(update.effective_message, 
             f"😅 نسبتك {result['score']}% — تحتاج {lesson.min_score}%. أعد المحاولة عبر /courses."
         )
     
@@ -606,7 +602,7 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         lesson = await s.get(Lesson, lesson_id)
         user = await _user(s, update.effective_user.id)
         if not user:
-            await q.edit_message_text("سجّل دخولك أولا.")
+            await tg.edit_text(q, "سجّل دخولك أولا.")
             return
         result = await submit_quiz(s, user, lesson, responses)
         # شهادة الإتمام
@@ -624,7 +620,7 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         pass
 
     if not result.get("ok"):
-        await update.effective_message.reply_text(f"⚠️ {result.get('error')}")
+        await tg.send_text(update.effective_message, f"⚠️ {result.get('error')}")
         return
 
     if result["passed"]:
@@ -636,9 +632,9 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             msg += "\n🏅 شارات جديدة: " + ", ".join(result["badges"])
         if cert:
             msg += f"\n🎓 شهادة إتمام الكورس: `{cert.code}`"
-        await update.effective_message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+        await tg.send_text(update.effective_message, msg, parse_mode=ParseMode.MARKDOWN)
     else:
-        await update.effective_message.reply_text(
+        await tg.send_text(update.effective_message, 
             f"😅 نسبتك {result['score']}% — تحتاج {lesson.min_score}%. أعد المحاولة عبر /courses."
         )
     
@@ -718,13 +714,13 @@ async def code_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )).scalars().all()
         )
     if not codes:
-        await q.edit_message_text("لا توجد أكواد لهذا الدرس.")
+        await tg.edit_text(q, "لا توجد أكواد لهذا الدرس.")
         return
     rows = [
         [InlineKeyboardButton(f"{i}. {c.title[:45]}", callback_data=f"code:{c.id}")]
         for i, c in enumerate(codes, start=1)
     ]
-    await q.edit_message_text(
+    await tg.edit_text(q, 
         f"📚 موسوعة الأكواد ({len(codes)}) — اختر كودا لعرض تشريحه وكل استخداماته:",
         reply_markup=InlineKeyboardMarkup(rows),
     )
@@ -737,7 +733,7 @@ async def code_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     async with SessionLocal() as s:
         c = await s.get(CodeSample, code_id)
     if not c:
-        await q.edit_message_text("الكود غير موجود.")
+        await tg.edit_text(q, "الكود غير موجود.")
         return
     try:
         await q.delete_message()

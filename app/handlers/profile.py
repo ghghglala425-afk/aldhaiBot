@@ -27,6 +27,7 @@ from core.learning import todays_daily
 from core.logging import get_logger
 from core.models import Certificate, Course, Lesson
 from core.repo import get_user_by_telegram
+from app import tg
 
 log = get_logger("bot.profile")
 
@@ -41,13 +42,13 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as s:
         user = await _user(s, update.effective_user.id)
         if not user:
-            await update.effective_message.reply_text("سجّل دخولك أولا عبر /start.")
+            await tg.send_text(update.effective_message, "سجّل دخولك أولا عبر /start.")
             return
         lesson = await todays_daily(s, user)
         if not lesson:
-            await update.effective_message.reply_text("🎉 أكملت كل الدروس المتاحة! تابع الإضافات قريبا.")
+            await tg.send_text(update.effective_message, "🎉 أكملت كل الدروس المتاحة! تابع الإضافات قريبا.")
             return
-        await update.effective_message.reply_text(
+        await tg.send_text(update.effective_message, 
             f"🎯 *درس اليوم*\n\n📖 {lesson.title}\n\n{(lesson.summary or '')[:200]}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(
@@ -66,37 +67,37 @@ async def rank(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.append(f"{r['rank']}. {r['name']} — {r['xp']} نقطة")
     if my_rank:
         lines.append(f"\n📍 ترتيبك: #{my_rank} ({user.xp} نقطة)")
-    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    await tg.send_text(update.effective_message, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
 async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as s:
         user = await _user(s, update.effective_user.id)
         if not user:
-            await update.effective_message.reply_text("سجّل دخولك أولا.")
+            await tg.send_text(update.effective_message, "سجّل دخولك أولا.")
             return
         rows = await list_notes(s, user.id, 15)
     if not rows:
-        await update.effective_message.reply_text("📝 لا توجد ملاحظات بعد. افتح درسا واضغط «ملاحظة».")
+        await tg.send_text(update.effective_message, "📝 لا توجد ملاحظات بعد. افتح درسا واضغط «ملاحظة».")
         return
     lines = ["📝 *ملاحظاتي*\n"]
     for n in rows:
         lines.append(f"• {n.text[:120]}")
-    await update.effective_message.reply_text("\n".join(lines)[:3900], parse_mode=ParseMode.MARKDOWN)
+    await tg.send_text(update.effective_message, "\n".join(lines)[:3900], parse_mode=ParseMode.MARKDOWN)
 
 
 async def bookmarks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as s:
         user = await _user(s, update.effective_user.id)
         if not user:
-            await update.effective_message.reply_text("سجّل دخولك أولا.")
+            await tg.send_text(update.effective_message, "سجّل دخولك أولا.")
             return
         rows = await list_bookmarks(s, user.id, 15)
     if not rows:
-        await update.effective_message.reply_text("🔖 لا توجد مرجعيات بعد.")
+        await tg.send_text(update.effective_message, "🔖 لا توجد مرجعيات بعد.")
         return
     buttons = [[InlineKeyboardButton(f"🔖 {r['title']}", callback_data=f"lesson:{r['lesson_id']}")] for r in rows]
-    await update.effective_message.reply_text("🔖 *مرجعياتي*", parse_mode=ParseMode.MARKDOWN,
+    await tg.send_text(update.effective_message, "🔖 *مرجعياتي*", parse_mode=ParseMode.MARKDOWN,
                                               reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -104,7 +105,7 @@ async def certificates_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     async with SessionLocal() as s:
         user = await _user(s, update.effective_user.id)
         if not user:
-            await update.effective_message.reply_text("سجّل دخولك أولا.")
+            await tg.send_text(update.effective_message, "سجّل دخولك أولا.")
             return
         certs = list((await s.execute(
             select(Certificate).where(Certificate.user_id == user.id)
@@ -114,12 +115,12 @@ async def certificates_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             for c in (await s.execute(select(Course))).scalars().all()
         }
     if not certs:
-        await update.effective_message.reply_text("🎓 لا توجد شهادات بعد. أكمل كورسا كاملا.")
+        await tg.send_text(update.effective_message, "🎓 لا توجد شهادات بعد. أكمل كورسا كاملا.")
         return
     lines = ["🎓 *شهاداتي*\n"]
     for c in certs:
         lines.append(f"• {courses.get(c.course_id, 'كورس')} — `{c.code}`")
-    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    await tg.send_text(update.effective_message, "\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
 async def bookmark_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -147,21 +148,21 @@ async def note_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     lesson_id = context.user_data.pop("note_lesson", None)
     text = (update.message.text or "").strip()
     if not lesson_id or not text:
-        await update.message.reply_text("لا يمكن حفظ ملاحظة فارغة.")
+        await tg.send_text(update.message, "لا يمكن حفظ ملاحظة فارغة.")
         return ConversationHandler.END
     async with SessionLocal() as s:
         user = await _user(s, update.effective_user.id)
         if not user:
-            await update.message.reply_text("سجّل دخولك أولا عبر /start.")
+            await tg.send_text(update.message, "سجّل دخولك أولا عبر /start.")
             return ConversationHandler.END
         await add_note(s, user.id, lesson_id, text[:2000])
-    await update.message.reply_text("✅ حُفظت ملاحظتك.")
+    await tg.send_text(update.message, "✅ حُفظت ملاحظتك.")
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("note_lesson", None)
-    await update.message.reply_text("تم الإلغاء.")
+    await tg.send_text(update.message, "تم الإلغاء.")
     return ConversationHandler.END
 
 

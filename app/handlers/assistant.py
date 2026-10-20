@@ -19,6 +19,7 @@ from core.db import SessionLocal
 from core.logging import get_logger
 from core.models import CodeSample, Lesson
 from pipeline.ai import AIError, chat_text
+from app import tg
 
 log = get_logger("bot.assistant")
 
@@ -36,9 +37,9 @@ async def _answer(update: Update, question: str) -> None:
     if not await ratelimit.guard(update, "ask"):
         return
     if not settings.ai_configured:
-        await update.effective_message.reply_text("🤖 المساعد الذكي يحتاج ضبط AI_API_KEY.")
+        await tg.send_text(update.effective_message, "🤖 المساعد الذكي يحتاج ضبط AI_API_KEY.")
         return
-    thinking = await update.effective_message.reply_text("🤖 أفكّر…")
+    thinking = await tg.send_text(update.effective_message, "🤖 أفكّر…")
     try:
         answer = await chat_text(TUTOR_SYSTEM, question)
     except AIError as e:
@@ -56,7 +57,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if question:
         await _answer(update, question)
         return ConversationHandler.END
-    await update.message.reply_text("🤖 أرسل سؤالك الآن (اكتب /cancel للإلغاء):")
+    await tg.send_text(update.message, "🤖 أرسل سؤالك الآن (اكتب /cancel للإلغاء):")
     return AWAIT_Q
 
 
@@ -125,7 +126,7 @@ async def explain_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("تم الإلغاء.")
+    await tg.send_text(update.message, "تم الإلغاء.")
     return ConversationHandler.END
 
 

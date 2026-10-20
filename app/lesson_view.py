@@ -90,7 +90,7 @@ def md_to_tg(text: str) -> str:
 
 
 def _bullets(items, emoji: str = "▫️", indent: str = "  ") -> str:
-    """قائمة نقطية موحّدة."""
+    """قائمة نقطية موحّدة (HTML mode — النصوص تُهرَّب)."""
     if not items:
         return ""
     lines = []
@@ -98,12 +98,12 @@ def _bullets(items, emoji: str = "▫️", indent: str = "  ") -> str:
         text = str(it).strip()
         if not text:
             continue
-        lines.append(f"{indent}{emoji} {text}")
+        lines.append(f"{indent}{emoji} {esc(text)}")
     return "\n".join(lines)
 
 
 def _numbered(items, start: int = 1, indent: str = "  ") -> str:
-    """قائمة مرقّمة."""
+    """قائمة مرقّمة (HTML mode — النصوص تُهرَّب)."""
     if not items:
         return ""
     lines = []
@@ -111,7 +111,7 @@ def _numbered(items, start: int = 1, indent: str = "  ") -> str:
         text = str(it).strip()
         if not text:
             continue
-        lines.append(f"{indent}<b>{i}.</b> {text}")
+        lines.append(f"{indent}<b>{i}.</b> {esc(text)}")
     return "\n".join(lines)
 
 def _bar(percent: float, width: int = 10) -> str:
@@ -189,7 +189,7 @@ def render_objectives(objectives) -> str:
         SEP,
     ]
     for i, o in enumerate(items, start=1):
-        lines.append(f"  <b>{i}️⃣</b> {o}")
+        lines.append(f"  <b>{i}️⃣</b> {esc(o)}")
     return "\n".join(lines)
 
 
@@ -331,7 +331,7 @@ def render_flashcard(card: dict, index: int, total: int, revealed: bool = False)
     else:
         opts = card.get("options") or []
         for i, o in enumerate(opts, start=1):
-            lines.append(f"  {i}️⃣ {o}")
+            lines.append(f"  {i}️⃣ {esc(o)}")
         lines += ["", "<i>اضغط «👁️ اكشف الجواب» لرؤية الحل</i>"]
     return "\n".join(lines)
 

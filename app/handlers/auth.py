@@ -21,6 +21,7 @@ from core.repo import (
     link_telegram,
     register_email,
 )
+from app import tg
 
 log = get_logger("bot.auth")
 
@@ -32,9 +33,9 @@ async def entry_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     q = update.callback_query
     if q:
         await q.answer()
-        await q.edit_message_text("📧 أرسل بريدك الإلكتروني للتسجيل:")
+        await tg.edit_text(q, "📧 أرسل بريدك الإلكتروني للتسجيل:")
     else:
-        await update.message.reply_text("📧 أرسل بريدك الإلكتروني للتسجيل:")
+        await tg.send_text(update.message, "📧 أرسل بريدك الإلكتروني للتسجيل:")
     return ASK_EMAIL
 
 
@@ -43,21 +44,21 @@ async def entry_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     q = update.callback_query
     if q:
         await q.answer()
-        await q.edit_message_text("📧 أرسل بريدك الإلكتروني للدخول:")
+        await tg.edit_text(q, "📧 أرسل بريدك الإلكتروني للدخول:")
     else:
-        await update.message.reply_text("📧 أرسل بريدك الإلكتروني للدخول:")
+        await tg.send_text(update.message, "📧 أرسل بريدك الإلكتروني للدخول:")
     return ASK_EMAIL
 
 
 async def got_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     email = (update.message.text or "").strip()
     if "@" not in email or "." not in email:
-        await update.message.reply_text("صيغة البريد غير صحيحة. أعد الإرسال:")
+        await tg.send_text(update.message, "صيغة البريد غير صحيحة. أعد الإرسال:")
         return ASK_EMAIL
     context.user_data["email"] = email
     mode = context.user_data.get("auth_mode", "login")
     word = "المرغوب" if mode == "register" else "الخاص بحسابك"
-    await update.message.reply_text(f"🔒 أرسل كلمة المرور {word}:")
+    await tg.send_text(update.message, f"🔒 أرسل كلمة المرور {word}:")
     return ASK_PASSWORD
 
 
@@ -79,18 +80,18 @@ async def got_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         else:
             user, err = await authenticate(session, email, password)
         if err or not user:
-            await update.message.reply_text(
+            await tg.send_text(update.message, 
                 f"❌ {err or 'فشل الدخول.'}\nأرسل /start للمحاولة مجددا."
             )
             return ConversationHandler.END
         try:
             await link_telegram(session, user, tg_id)
         except PermissionError as e:
-            await update.message.reply_text(f"🔒 {e}\nاستخدم حسابا آخر أو تواصل مع الدعم.")
+            await tg.send_text(update.message, f"🔒 {e}\nاستخدم حسابا آخر أو تواصل مع الدعم.")
             return ConversationHandler.END
         name = user.username or user.email
 
-    await update.message.reply_text(
+    await tg.send_text(update.message, 
         f"✅ تم {'إنشاء الحساب' if mode == 'register' else 'الدخول'} بنجاح، أهلا {name}!\n"
         "استخدم الأزرار بالأسفل للبدء.",
         reply_markup=main_reply_kb(),
@@ -101,7 +102,7 @@ async def got_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text("تم الإلغاء. أرسل /start للبدء.")
+    await tg.send_text(update.message, "تم الإلغاء. أرسل /start للبدء.")
     return ConversationHandler.END
 
 

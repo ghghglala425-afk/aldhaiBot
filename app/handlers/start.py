@@ -10,6 +10,7 @@ from core.config import settings
 from core.db import SessionLocal
 from core.logging import get_logger
 from core.repo import get_user_by_telegram
+from app import tg
 
 log = get_logger("bot.start")
 
@@ -26,18 +27,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as session:
         user = await get_user_by_telegram(session, tg_id)
     if user:
-        await update.message.reply_text(
+        await tg.send_text(update.message, 
             f"👋 أهلا بعودتك {user.username or user.email}!\nاستخدم الأزرار بالأسفل.",
             reply_markup=main_reply_kb(),
         )
     else:
-        await update.message.reply_text(
+        await tg.send_text(update.message, 
             WELCOME, parse_mode="Markdown", reply_markup=welcome_kb()
         )
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
+    await tg.send_text(update.message, 
         "🤖 *أكاديمية الأمن السيبراني والبرمجة*\n\n"
         "*التعلّم:*\n"
         "/courses الكورسات والدروس\n"
@@ -60,7 +61,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("القائمة جاهزة 👇", reply_markup=main_reply_kb())
+    await tg.send_text(update.message, "القائمة جاهزة 👇", reply_markup=main_reply_kb())
 
 
 async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -68,7 +69,7 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     async with SessionLocal() as session:
         user = await get_user_by_telegram(session, tg_id)
         if not user:
-            await update.message.reply_text(
+            await tg.send_text(update.message, 
                 "لم تسجّل بعد. أرسل /start.", reply_markup=welcome_kb()
             )
             return
@@ -102,7 +103,7 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     ]
     if started:
         lines.append(f"دروس قيد التعلّم: {started}")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await tg.send_text(update.message, "\n".join(lines), parse_mode="Markdown")
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -139,7 +140,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"🛰️ البوت: {settings.BOT_MODE}\n"
         f"🤖 وضع AI: {ai_mode} ({providers}){usage_str}"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await tg.send_text(update.message, text, parse_mode="Markdown")
 
 
 def register_handlers(app) -> None:
