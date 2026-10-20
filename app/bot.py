@@ -309,6 +309,9 @@ def _detect_platform() -> None:
         settings.BOT_MODE = "polling"
 
 
+_health_started = False
+
+
 def _start_health_server(port: int) -> None:
     """خادم صحي صغير في خيط منفصل — يخدم /health على Railway.
 
@@ -360,7 +363,7 @@ def _start_health_server(port: int) -> None:
                         "model": settings.GEMINI_MODEL,
                     },
                     "bot_token": bool(settings.BOT_TOKEN),
-                    "token_valid": _token_state["valid"] or None,
+                    "token_valid": _token_state["valid"] if _token_state["checked"] else None,
                     "token_error": _token_state["error"],
                     "bot_username": _token_state["username"],
                     "admins": settings.admin_ids,
@@ -378,6 +381,8 @@ def _start_health_server(port: int) -> None:
         server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        global _health_started
+        _health_started = True
         log.info("خادم الفحص الصحي يعمل على المنفذ %s", port)
     except OSError as e:
         log.warning("تعذّر تشغيل خادم الفحص الصحي على %s: %s", port, e)
@@ -476,7 +481,7 @@ def _run() -> None:
     # (1) فحص صحة Railway لا يتأخر بسبب انتظار Postgres،
     # (2) يبقى /diag متاحا لتشخيص أي فشل.
     health_state = None
-    if os.environ.get("PORT", "").strip().isdigit():
+    if os.environ.get("PORT", "").strip().isdigit() and not _health_started:
         health_state = _start_health_server(settings.WEBHOOK_PORT)
 
     if fatal:
@@ -522,13 +527,28 @@ def _run() -> None:
         asyncio.run(close_db())
 
 
-def _idle_loop() -> None:
-    """يبقي العملية حية بلا عمل — كي يبقى النشر قابلا للتشخيص."""
+def _idle_loop(reason: str = "") -> None:
+    """يبقي العملية حية بلا عمل — كي يبقى النشر قابلا للتشخيص.
+
+    يعيد فحص التوكن كل دقيقة: إذا صُحّح المتغير (في Railway) يبدأ البوت
+    تلقائيا دون الحاجة لإعادة نشر.
+    """
     import time
 
-    log.warning("⏳ الخدمة في وضع الانتظار (لا يوجد BOT_TOKEN). راقب /diag لتعرف السبب.")
+    log.warning("⏳ الخدمة في وضع الانتظار%s — نعيد فحص التوكن كل دقيقة.", reason)
+    attempts = 0
     while True:
         time.sleep(60)
+        attempts += 1
+        if attempts % 5 == 0:
+            log.info("إعادة فحص التوكن (المحاولة %s)…", attempts)
+        try:
+            if asyncio.run(_validate_token()):
+                log.info("✅ التوكن صالح الآن — متابعة التشغيل.")
+                _run()
+                return
+        except Exception as e:  # noqa: BLE001
+            log.debug("فشل إعادة الفحص: %s", e)
 
 
 if __name__ == "__main__":
