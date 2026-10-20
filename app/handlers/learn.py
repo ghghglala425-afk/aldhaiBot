@@ -13,10 +13,12 @@ from app.pagination import clamp_page, nav_row, slice_page, total_pages
 from core.db import SessionLocal
 from core.learning import (
     STATUS_AVAILABLE,
+    STATUS_IN_PROGRESS,
     STATUS_LOCKED,
     STATUS_PASSED,
     get_progress,
     labs_for_lesson,
+    start_lesson,
     status_map,
     submit_quiz,
 )
@@ -103,6 +105,10 @@ async def course_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         icon = _STATUS_ICON.get(r["status"], "•")
         if lsn.status == "outline":
             icon = "🕓"
+        elif r["status"] == STATUS_IN_PROGRESS:
+            icon = "⏳"
+        elif r["status"] == STATUS_PASSED:
+            icon = "✅"
         lines.append(f"{icon} {lsn.title}")
         buttons.append([InlineKeyboardButton(f"{icon} {lsn.title[:46]}", callback_data=f"lesson:{lsn.id}")])
     buttons.append(nav_row(f"course:{course_id}", page, pages))
@@ -238,6 +244,12 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     progress_pct = round(done / max(1, len(rows)) * 100)
         except Exception as e:  # noqa: BLE001
             log.debug("تعذّر حساب التقدم: %s", e)
+
+        # ---------- تسجيل بدء التعلّم ----------
+        try:
+            await start_lesson(s, user.id, lesson_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("تعذّر تسجيل بدء الدرس: %s", e)
 
     # ---------- الترويسة ----------
     header = lv.render_header(

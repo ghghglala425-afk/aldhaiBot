@@ -19,6 +19,7 @@ from core.models import (
     CodeSample,
     Course,
     Lesson,
+    LessonTimeLog,
     Progress,
     Question,
     Quiz,
@@ -40,17 +41,24 @@ class LessonTimeStats:
     longest_session: int
     streak_days: int
 
-async def track_lesson_time(user_id: int, lesson_id: int, duration_seconds: int) -> None:
+async def track_lesson_time(
+    session: AsyncSession | None = None,
+    user_id: int = 0,
+    lesson_id: int = 0,
+    duration_seconds: int = 0,
+) -> None:
     """تسجيل الوقت المستغرق في الدرس."""
+    row = LessonTimeLog(
+        user_id=user_id,
+        lesson_id=lesson_id,
+        duration_seconds=duration_seconds,
+    )
+    if session is not None:
+        session.add(row)
+        await session.commit()
+        return
     async with SessionLocal() as s:
-        from core.models import LessonTimeLog
-        log = LessonTimeLog(
-            user_id=user_id,
-            lesson_id=lesson_id,
-            duration_seconds=duration_seconds,
-            created_at=datetime.utcnow()
-        )
-        s.add(log)
+        s.add(row)
         await s.commit()
 
 

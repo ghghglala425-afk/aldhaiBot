@@ -391,12 +391,22 @@ def _start_health_server(port: int) -> None:
 
 def _diag_database() -> dict:
     """تشخيص سريع لقاعدة البيانات — يظهر في /diag."""
-    from core.db import _DATABASE_URL, SessionLocal
+    from core.db import (
+        _DATABASE_URL,
+        SessionLocal,
+        fallback_reason,
+        is_misconfigured,
+        using_sqlite,
+    )
 
     info: dict[str, object] = {
-        "kind": "sqlite" if _DATABASE_URL.startswith("sqlite") else "postgresql",
+        "kind": "sqlite" if using_sqlite() else "postgresql",
         "connected": False,
         "error": None,
+        "fallback_reason": fallback_reason(),
+        "misconfigured": is_misconfigured(),
+        # البيانات في SQLite داخل الحاوية تضيع عند كل إعادة نشر
+        "persistent": not using_sqlite(),
     }
     try:
         from sqlalchemy import text
@@ -424,6 +434,33 @@ def _startup_banner() -> None:
     log.info("  سجل التوكن    : %s", "✅ موجود" if settings.BOT_TOKEN else "❌ مفقود")
     log.info("  Port         : %s", os.environ.get("PORT", "(غير محدد)"))
     log.info("=" * 52)
+
+
+async def _notify_admins_db_fallback(reason: str | None) -> None:
+    """ينبّه المشرف أن البيانات تُكتب في SQLite مؤقت (تضيع عند كل نشر)."""
+    if not settings.admin_ids:
+        return
+    try:
+        from telegram import Bot
+
+        bot = Bot(settings.BOT_TOKEN)
+        for admin_id in settings.admin_ids:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    "⚠️ <b>تحذير: قاعدة البيانات مؤقتة</b>\n\n"
+                    "البوت يكتب في <b>SQLite داخل الحاوية</b> وليس في PostgreSQL، "
+                    "لذلك <b>ستضيع كل البيانات عند كل إعادة نشر</b>.\n\n"
+                    f"السبب: <code>{reason or 'غير معروف'}</code>\n\n"
+                    "<b>الحل:</b> في Railway ← الخدمة ← Variables ← أضف:\n"
+                    "<code>DATABASE_URL = ${{Postgres.DATABASE_URL}}</code>\n"
+                    "ثم أعد النشر. (تأكد من إضافة المتغير لكلتا الخدمتين: البوت والـ API)",
+                    parse_mode="HTML",
+                )
+            except TelegramError:
+                continue
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر إبلاغ المشرف: %s", e)
 
 
 _token_state = {"checked": False, "valid": False, "error": None, "username": None}
@@ -503,6 +540,21 @@ def _run() -> None:
         if health_state is None:
             raise
         # نكمل التشغيل: خادم الفحص الصحي يعمل والبوت يمكنه العمل
+
+    # تحذير مهم: الكتابة في SQLite داخل الحاوية = ضياع البيانات عند كل نشر
+    try:
+        from core.db import fallback_reason, using_sqlite
+
+        if using_sqlite():
+            reason = fallback_reason()
+            log.critical(
+                "⚠️ قاعدة البيانات مؤقتة (SQLite داخل الحاوية) — البيانات تضيع "
+                "عند كل إعادة نشر! السبب: %s",
+                reason or "غير معروف",
+            )
+            asyncio.run(_notify_admins_db_fallback(reason))
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر فحص نوع قاعدة البيانات: %s", e)
 
     app = build_application()
 

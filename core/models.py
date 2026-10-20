@@ -307,6 +307,8 @@ class Progress(Base):
     status: Mapped[str] = mapped_column(String(20), default="locked")
     best_score: Mapped[int] = mapped_column(Integer, default=0)
     attempts_count: Mapped[int] = mapped_column(Integer, default=0)
+    # متى بدأ المستخدم هذا الدرس (أول مرة) — يثبت أن التعلّم بدأ فعلا
+    started_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     __table_args__ = (UniqueConstraint("user_id", "lesson_id", name="uq_progress"),)

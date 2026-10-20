@@ -64,9 +64,30 @@ def _is_private_service_host(host: str) -> bool:
     """مضيف خدمة داخلية (Railway/Nomad) — لا يُفحص بال DNS محليا.
 
     `postgres.railway.internal` لا يُحلّ خارج شبكة Railway، لكن يُحلّ داخلها.
-    فحصه بالـ DNS محليا يعني تدهوراAlways إلى SQLite.
+    فحصه بالـ DNS محليا يعني تدهورا دائما إلى SQLite.
     """
     return host.endswith(".internal") or host.endswith(".railway.internal")
+
+
+# سبب السقوط إلى SQLite (None = لا سقوط، القاعدة PostgreSQL)
+_FALLBACK_REASON: str | None = None
+# هل السقوط سببه خطأ في الإعداد (يستوجب تنبيها)
+_FALLBACK_IS_MISCONFIG: bool = False
+
+
+def fallback_reason() -> str | None:
+    """سبب السقوط إلى SQLite إن حدث، وإلا None."""
+    return _FALLBACK_REASON
+
+
+def using_sqlite() -> bool:
+    """هل تعمل الخدمة على SQLite؟"""
+    return _DATABASE_URL.startswith("sqlite")
+
+
+def is_misconfigured() -> bool:
+    """هل السقوط إلى SQLite بسبب إعداد خاطئ (متغير ناقص/مرجع غير محلول)؟"""
+    return _FALLBACK_IS_MISCONFIG
 
 
 def choose_database_url(raw: str | None) -> tuple[str, str]:
@@ -90,7 +111,21 @@ def choose_database_url(raw: str | None) -> tuple[str, str]:
 
 def resolve_database_url() -> str:
     """يقرّر رابط قاعدة البيانات الفعلي حسب بيئة التشغيل."""
+    global _FALLBACK_REASON, _FALLBACK_IS_MISCONFIG
+
     url, reason = choose_database_url(os.environ.get("DATABASE_URL"))
+
+    if reason == "sqlite":
+        _FALLBACK_REASON = None
+        _FALLBACK_IS_MISCONFIG = False
+        return url
+
+    # كل ما عداه سقوط إلى SQLite
+    _FALLBACK_REASON = reason
+    _FALLBACK_IS_MISCONFIG = reason in {"unset", "unresolved-reference"} or reason.startswith(
+        "unresolvable-host"
+    )
+
     if reason == "unset":
         log.warning(
             "DATABASE_URL غير مضبوط — سيتم استعمال SQLite المحلي (%s). "
@@ -232,7 +267,8 @@ async def _connect_with_retry() -> None:
 
 async def _fallback_to_sqlite(reason: str) -> None:
     """ينتقل إلى SQLite عندما يتعذّر الوصول إلى PostgreSQL (مضيف غير معروف)."""
-    global engine, _DATABASE_URL
+    global engine, _DATABASE_URL, _FALLBACK_REASON, _FALLBACK_IS_MISCONFIG
+
     log.error(
         "تعذّر الوصول إلى PostgreSQL (%s) — التحويل إلى SQLite المحلي. "
         "تأكد من ضبط DATABASE_URL في Railway Variables.",
@@ -240,6 +276,8 @@ async def _fallback_to_sqlite(reason: str) -> None:
     )
     await engine.dispose()
     _DATABASE_URL = SQLITE_FALLBACK
+    _FALLBACK_REASON = f"unreachable:{reason}"
+    _FALLBACK_IS_MISCONFIG = True
     _ensure_sqlite_dir(_DATABASE_URL)
     engine = create_async_engine(_DATABASE_URL, echo=False, **_engine_kwargs(_DATABASE_URL))
     SessionLocal._set(
@@ -266,6 +304,7 @@ async def _apply_column_migrations(conn) -> None:
         ("lessons", "prerequisites", "JSON NOT NULL DEFAULT '[]'"),
         ("lessons", "further_reading", "JSON NOT NULL DEFAULT '[]'"),
         ("lessons", "est_reading_minutes", "INTEGER NOT NULL DEFAULT 0"),
+        ("progress", "started_at", "TIMESTAMP"),
     ]
 
     is_pg = not _DATABASE_URL.startswith("sqlite")

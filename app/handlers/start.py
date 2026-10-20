@@ -67,18 +67,42 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     tg_id = update.effective_user.id
     async with SessionLocal() as session:
         user = await get_user_by_telegram(session, tg_id)
-    if not user:
-        await update.message.reply_text("لم تسجّل بعد. أرسل /start.", reply_markup=welcome_kb())
-        return
-    await update.message.reply_text(
-        "👤 *حسابك*\n"
-        f"الاسم: {user.username or '—'}\n"
-        f"البريد: {user.email or '—'}\n"
-        f"النقاط: {user.xp}\n"
-        f"المستوى: {user.level}\n"
+        if not user:
+            await update.message.reply_text(
+                "لم تسجّل بعد. أرسل /start.", reply_markup=welcome_kb()
+            )
+            return
+        # الدروس التي بدأها ولم يكملها
+        from sqlalchemy import func, select
+
+        from core.learning import STATUS_IN_PROGRESS
+        from core.models import Progress
+
+        started = (await session.execute(
+            select(func.count()).select_from(Progress).where(
+                Progress.user_id == user.id,
+                Progress.status == STATUS_IN_PROGRESS,
+            )
+        )).scalar() or 0
+        passed = (await session.execute(
+            select(func.count()).select_from(Progress).where(
+                Progress.user_id == user.id,
+                Progress.status == "passed",
+            )
+        )).scalar() or 0
+
+    lines = [
+        "👤 *حسابك*\n",
+        f"الاسم: {user.username or '—'}",
+        f"البريد: {user.email or '—'}",
+        f"النقاط: {user.xp}",
+        f"المستوى: {user.level}",
         f"السلسلة: {user.streak_count} يوم",
-        parse_mode="Markdown",
-    )
+        f"دروس مكتملة: {passed}",
+    ]
+    if started:
+        lines.append(f"دروس قيد التعلّم: {started}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

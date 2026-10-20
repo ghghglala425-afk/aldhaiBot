@@ -65,13 +65,55 @@ async def _ensure(session: AsyncSession, user_id: int, lesson_id: int) -> Progre
     return p
 
 
+async def start_lesson(session: AsyncSession, user_id: int, lesson_id: int) -> Progress:
+    """يسجّل أن المستخدم بدأ هذا الدرس.
+
+    يُنشئ صف Progress إن لم يكن موجودا (status=in_progress) ويضبط started_at
+    عند أول فتح — بلا أن يغيّر حالة الإكمال.
+    """
+    prog = await _ensure(session, user_id, lesson_id)
+    now = dt.datetime.now(dt.timezone.utc)
+    changed = False
+    if prog.started_at is None:
+        prog.started_at = now
+        changed = True
+    if prog.status == STATUS_LOCKED:
+        prog.status = STATUS_IN_PROGRESS
+        changed = True
+    if changed:
+        prog.updated_at = now
+        await session.commit()
+        await session.refresh(prog)
+    return prog
+
+
+async def finish_lesson_time(session: AsyncSession, user_id: int, lesson_id: int) -> None:
+    """يسجّل المدة التي قضاها المستخدم في الدرس."""
+    prog = await get_progress(session, user_id, lesson_id)
+    if not prog or not prog.started_at:
+        return
+    started = prog.started_at
+    now = dt.datetime.now(dt.timezone.utc)
+    # SQLite يخلّي الحقول بلا منطقة زمنية — نوحّدها قبل الطرح
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=dt.timezone.utc)
+    elapsed = (now - started).total_seconds()
+    if elapsed < 5:  # نقرة عابرة
+        return
+    from core.features import track_lesson_time
+
+    await track_lesson_time(session, user_id, lesson_id, int(elapsed))
+
+
 async def status_map(session: AsyncSession, user: User, course_id: int) -> list[dict]:
     """يُرجع قائمة الدروس مع حالتها للمستخدم (مع الفتح المتسلسل)."""
     lessons = await ordered_lessons(session, course_id)
     res = await session.execute(
         select(Progress).where(Progress.user_id == user.id)
     )
-    passed = {p.lesson_id: p for p in res.scalars().all() if p.status == STATUS_PASSED}
+    by_lesson = {p.lesson_id: p for p in res.scalars().all()}
+    passed = {lid: p for lid, p in by_lesson.items() if p.status == STATUS_PASSED}
+    in_progress = {lid for lid, p in by_lesson.items() if p.status == STATUS_IN_PROGRESS}
 
     out: list[dict] = []
     prev_passed = True
@@ -80,11 +122,17 @@ async def status_map(session: AsyncSession, user: User, course_id: int) -> list[
             status = STATUS_PASSED
             prev_passed = True
         elif prev_passed:
-            status = STATUS_AVAILABLE
+            # الدرس التالي يبقى مقفلا حتى اجتياز هذا (بدأ أو لا)
+            status = STATUS_IN_PROGRESS if lsn.id in in_progress else STATUS_AVAILABLE
             prev_passed = False
         else:
             status = STATUS_LOCKED
-        out.append({"lesson": lsn, "status": status, "best_score": passed.get(lsn.id).best_score if lsn.id in passed else 0})
+        out.append({
+            "lesson": lsn,
+            "status": status,
+            "best_score": passed[lsn.id].best_score if lsn.id in passed else 0,
+            "started_at": by_lesson[lsn.id].started_at if lsn.id in by_lesson else None,
+        })
     return out
 
 
@@ -157,6 +205,8 @@ async def submit_quiz(
     prog.attempts_count = (prog.attempts_count or 0) + 1
     prog.best_score = max(prog.best_score or 0, score)
     prog.status = STATUS_PASSED if passed else STATUS_IN_PROGRESS
+    if prog.started_at is None:
+        prog.started_at = dt.datetime.now(dt.timezone.utc)
     if passed and not prog.completed_at:
         prog.completed_at = dt.datetime.now(dt.timezone.utc)
 
@@ -166,6 +216,12 @@ async def submit_quiz(
         await gami.update_streak(session, user)
         new_badges = await gami.evaluate_badges(session, user)
     await session.commit()
+
+    # تسجيل مدة التعلّم (من أول فتح الدرس حتى إنهاء الاختبار)
+    try:
+        await finish_lesson_time(session, user.id, lesson.id)
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر تسجيل مدة التعلّم: %s", e)
 
     return {
         "ok": True, "score": score, "passed": passed, "detail": detail,
