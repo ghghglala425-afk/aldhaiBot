@@ -131,7 +131,7 @@ class Settings(BaseSettings):
 
     # ===== التوسّع العالمي: مخطط كل لغة = مراحل × دروس =====
     GEN_STAGES: int = 10
-    GEN_LESSONS_PER_STAGE: int = 100
+    GEN_LESSONS_PER_STAGE: int = 20
     GEN_OUTLINE_ENABLED: bool = True
     # توليد تلقائي عند فتح درس مخطط (Lazy fill)
     GEN_LAZY_ON_OPEN: bool = True

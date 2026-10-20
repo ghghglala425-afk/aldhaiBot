@@ -13,6 +13,7 @@ from typing import Optional
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -41,7 +42,10 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    telegram_id: Mapped[Optional[int]] = mapped_column(unique=True, index=True)
+    # معرّفات تلجرام تتجاوز نطاق int32 — يجب أن تكون BIGINT.
+    telegram_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, unique=True, index=True
+    )
     email: Mapped[Optional[str]] = mapped_column(unique=True, index=True)
     username: Mapped[Optional[str]] = mapped_column(unique=True, index=True)
     pass_hash: Mapped[Optional[str]] = mapped_column(String(255))

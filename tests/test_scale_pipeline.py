@@ -60,7 +60,7 @@ def test_iter_language_lessons_scale_and_uniqueness():
     from core.config import settings
 
     plans = iter_language_lessons("python", "بايثون", icon="🐍")
-    assert len(plans) == settings.lessons_per_language == 1000
+    assert len(plans) == settings.lessons_per_language == 200
     slugs = {p.slug for p in plans}
     assert len(slugs) == len(plans), "عناوين/معرّفات مكرّرة"
     assert {p.stage_index for p in plans} == set(range(1, settings.GEN_STAGES + 1))

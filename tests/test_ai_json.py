@@ -49,6 +49,6 @@ def test_json_mode_auto_order():
 
 def test_settings_defaults_for_local_model():
     assert settings.lessons_per_language == settings.GEN_STAGES * settings.GEN_LESSONS_PER_STAGE
-    assert settings.lessons_per_language >= 1000
+    assert settings.lessons_per_language == 200
     assert settings.AI_MAX_TOKENS >= 1024
     assert settings.outline_model  # غير فارغ

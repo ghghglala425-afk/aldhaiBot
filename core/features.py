@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import func, select
@@ -120,7 +120,7 @@ async def schedule_review(user_id: int, lesson_id: int, quality: int) -> None:
             review.interval = 1
             review.ease_factor = max(1.3, review.ease_factor - 0.2)
         
-        review.next_review = datetime.utcnow() + timedelta(days=review.interval)
+        review.next_review = (datetime.now(timezone.utc) + timedelta(days=review.interval)).date()
         review.last_quality = quality
         await s.commit()
 
@@ -129,7 +129,7 @@ async def get_due_reviews(user_id: int, limit: int = 10) -> list[dict]:
     """الحصول على الدروس المستحقة للمراجعة."""
     async with SessionLocal() as s:
         from core.models import ReviewSchedule, Lesson
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).date()
         reviews = list((await s.execute(
             select(ReviewSchedule, Lesson)
             .join(Lesson, ReviewSchedule.lesson_id == Lesson.id)
@@ -306,9 +306,9 @@ async def get_execution_metrics(user_id: int | None = None, days: int = 30) -> C
     """مقاييس تنفيذ الكود."""
     async with SessionLocal() as s:
         from core.models import CodeExecution
-        from datetime import date, timedelta
-        
-        since = date.today() - timedelta(days=days)
+        from datetime import timedelta
+
+        since = datetime.now(timezone.utc) - timedelta(days=days)
         query = select(CodeExecution).where(CodeExecution.created_at >= since)
         if user_id:
             query = query.where(CodeExecution.user_id == user_id)
@@ -542,7 +542,7 @@ async def export_user_progress(user_id: int, format: str = "json") -> dict:
                 }
                 for p in progresses
             ],
-            "exported_at": datetime.utcnow().isoformat(),
+            "exported_at": datetime.now(timezone.utc).isoformat(),
         }
         
         if format == "json":
@@ -599,6 +599,7 @@ async def get_user_execution_history(
     async with SessionLocal() as s:
         from core.models import CodeExecution
         from datetime import datetime, timedelta
+
         
         query = select(CodeExecution).where(CodeExecution.user_id == user_id)
         if lesson_id:

@@ -141,13 +141,25 @@ async def is_unlocked(session: AsyncSession, user: User, lesson: Lesson) -> bool
     if not stage:
         return False
     lessons = await ordered_lessons(session, stage.course_id)
+    prior_ids: list[int] = []
     for lsn in lessons:
         if lsn.id == lesson.id:
-            return True
-        p = await get_progress(session, user.id, lsn.id)
-        if not p or p.status != STATUS_PASSED:
-            return False
-    return False
+            break
+        prior_ids.append(lsn.id)
+    else:
+        return False
+    if not prior_ids:
+        return True
+    passed = await session.scalar(
+        select(func.count())
+        .select_from(Progress)
+        .where(
+            Progress.user_id == user.id,
+            Progress.lesson_id.in_(prior_ids),
+            Progress.status == STATUS_PASSED,
+        )
+    )
+    return int(passed or 0) == len(prior_ids)
 
 
 # ---------------------------------------------------------------------

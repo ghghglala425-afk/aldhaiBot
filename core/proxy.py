@@ -114,6 +114,9 @@ def decode(op: str, value: str) -> dict:
         if op == "b64e":
             r = base64.b64encode(value.encode()).decode()
         elif op == "b64d":
+            # Base64 نص ASCII فقط؛ النص العربي هنا ليس خطأ برمجي بل مدخل غير صالح.
+            if not value.isascii():
+                return {"ok": False, "error": "قيمة Base64 يجب أن تحتوي أحرفا إنجليزية فقط."}
             r = base64.b64decode(value + "=" * (-len(value) % 4)).decode("utf-8", "replace")
         elif op == "urle":
             r = urllib.parse.quote(value)

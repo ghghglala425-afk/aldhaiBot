@@ -336,6 +336,26 @@ async def _apply_column_migrations(conn) -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("تعذّر إضافة العمود %s.%s: %s", table, column, e)
 
+    # معرّفات تلجرام قد تتجاوز 2^31 (int32) فتسبب:
+    #   invalid input for query argument $1: ... (value out of int32 range)
+    # نوسّع العمود القائم إلى BIGINT مرة واحدة (create_all لا يعدّل الأنواع).
+    try:
+        if is_pg:
+            res = await conn.execute(
+                text(
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_name = 'users' AND column_name = 'telegram_id'"
+                )
+            )
+            row = res.first()
+            if row and str(row[0]).lower() in {"integer", "smallint"}:
+                await conn.execute(
+                    text("ALTER TABLE users ALTER COLUMN telegram_id TYPE BIGINT")
+                )
+                log.warning("مُرحّل: وُسّع users.telegram_id إلى BIGINT")
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر توسيع users.telegram_id إلى BIGINT: %s", e)
+
 
 async def init_db() -> None:
     """إنشاء/تحديث الجداول (آمن ومتكرر بلا أثر جانبي)."""

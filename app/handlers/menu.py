@@ -9,7 +9,12 @@ from __future__ import annotations
 import re
 
 from telegram import Update
-from telegram.ext import CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import (
+    ApplicationHandlerStop,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+)
 
 from app import keyboards as kb
 from app.handlers import languages, learn, paths, profile, start
@@ -34,8 +39,12 @@ def _pattern() -> str:
 async def reply_menu(update: Update, context) -> None:
     text = (update.message.text or "").strip()
     handler = IMMEDIATE.get(text)
-    if handler:
-        await handler(update, context)
+    if not handler:
+        return
+    await handler(update, context)
+    # أوقف تمرير الزر إلى المحادثات في المجموعات اللاحقة (مثل Decoder)
+    # وإلا فُسّر نص الزر — بعد معالجته — كقيمة إدخال وأظهر خطأ إضافيا.
+    raise ApplicationHandlerStop
 
 
 async def noop(update: Update, context) -> None:
