@@ -18,6 +18,7 @@ from core.config import settings
 from core.db import SessionLocal
 from core.logging import get_logger
 from core.models import (
+    CodeSample,
     Course,
     GenerationJob,
     Language,
@@ -34,6 +35,7 @@ log = get_logger("pipeline.jobs")
 _claim_lock = asyncio.Lock()
 _stop = asyncio.Event()
 _worker_task: asyncio.Task | None = None
+_background_tasks: set[asyncio.Task] = set()
 
 
 def _now() -> dt.datetime:
@@ -258,6 +260,67 @@ async def _generate_lesson_job(session, job: GenerationJob) -> dict:
     return {"ok": True, "lesson_id": row.id, "codes": len(generated.code_samples)}
 
 
+async def _enrich_lesson_async(lesson_id: int) -> None:
+    """يُثري أكواد درس مولَّد فورا (تشريح/استخدامات) في الخلفية بلا حجب المستخدم."""
+    from pipeline.atlas import enrich_codes
+    from pipeline.schema import GeneratedCode
+
+    try:
+        async with SessionLocal() as session:
+            lesson = await session.get(Lesson, lesson_id)
+            if not lesson:
+                return
+            rows = list(
+                (await session.execute(
+                    select(CodeSample)
+                    .where(CodeSample.lesson_id == lesson_id)
+                    .order_by(CodeSample.order_index)
+                )).scalars().all()
+            )
+            if not rows or any(r.usages for r in rows):
+                return
+            codes = [
+                GeneratedCode.model_validate(
+                    {
+                        "language": r.language,
+                        "title": r.title,
+                        "code": r.code,
+                        "explanation": r.explanation or "",
+                        "expected_output": r.expected_output or "",
+                        "anatomy": r.anatomy or [],
+                        "usages": r.usages or [],
+                        "parameters": r.parameters or [],
+                        "returns": r.returns or "",
+                        "gotchas": r.gotchas or [],
+                        "security_notes": r.security_notes or [],
+                        "related": r.related or [],
+                        "tags": r.tags or [],
+                    }
+                )
+                for r in rows
+            ]
+            enriched = await enrich_codes(codes, lesson.language_slug or "python")
+            for row, gc in zip(rows, enriched):
+                row.anatomy = [a.model_dump() for a in gc.anatomy]
+                row.usages = [u.model_dump() for u in gc.usages]
+                row.parameters = [p.model_dump() for p in gc.parameters]
+                row.returns = gc.returns
+                row.gotchas = gc.gotchas
+                row.security_notes = gc.security_notes
+                row.related = gc.related
+                row.tags = gc.tags
+            await session.commit()
+            log.info("أُثري الدرس #%s في الخلفية (موسوعة الأكواد)", lesson_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر إثراء الدرس #%s في الخلفية: %s", lesson_id, e)
+
+
+def _schedule_enrichment(lesson_id: int) -> None:
+    task = asyncio.create_task(_enrich_lesson_async(lesson_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 async def generate_lesson_now(
     lesson_id: int, *, fast: bool = True, timeout: float = 150.0
 ) -> dict:
@@ -314,6 +377,8 @@ async def generate_lesson_now(
                 job.status = "done" if res.get("ok") else "failed"
                 job.error = None if res.get("ok") else (res.get("error") or "خطأ")
                 await session.commit()
+            if res.get("ok") and fast:
+                _schedule_enrichment(lesson_id)
             return res
 
     # مهمة جارية بالفعل: انتظر انتهاءها بدل التوليد المكرر.
