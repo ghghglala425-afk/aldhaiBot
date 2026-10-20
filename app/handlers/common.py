@@ -18,6 +18,17 @@ def esc(text: str | None) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def spawn(coro) -> asyncio.Task:
+    """يشغّل مهمة خلفية مع حفظ مرجع (كي لا يجمعها جامع المهملات)."""
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
+
+
 async def current_user(update: Update):
     """يُرجع المستخدم المرتبط بحساب تلجرام أو None."""
     tg_id = update.effective_user.id if update.effective_user else None

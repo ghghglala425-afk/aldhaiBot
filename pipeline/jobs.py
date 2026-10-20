@@ -153,7 +153,7 @@ async def enqueue_all_languages(session) -> int:
 
 async def enqueue_warm(session, language: str, n: int | None = None) -> int:
     """يُدرج توليد أول N درس للغة (تسخين)."""
-    n = n or settings.GEN_WARM_LESSONS
+    n = settings.GEN_WARM_LESSONS if n is None else n
     course_slug = f"{language}-mastery"
     res = await session.execute(
         select(Lesson.id)
@@ -166,6 +166,44 @@ async def enqueue_warm(session, language: str, n: int | None = None) -> int:
     added = 0
     for lid in res.scalars().all():
         if await enqueue_lesson(session, lid, priority=3):
+            added += 1
+    return added
+
+
+async def enqueue_prebuild(
+    session,
+    language: str,
+    *,
+    priority: int | None = None,
+    limit: int | None = None,
+    stage_index: int | None = None,
+) -> int:
+    """يُدرج كل دروس اللغة المخطّطة (أو مرحلة واحدة) للبناء التدريجي في الخلفية.
+
+    مرتّبة بترتيب الدراسة (مرحلة ثم درس) كي يكون التقدّم منطقيا. المهام
+    منخفضة الأولوية، والفتح الفوري للمستخدم (أولوية 10) يسبقها دائما.
+    """
+    prio = settings.GEN_PREBUILD_PRIORITY if priority is None else priority
+    cap = settings.GEN_PREBUILD_MAX if limit is None else limit
+    course_slug = f"{language}-mastery"
+    stmt = (
+        select(Lesson.id)
+        .join(Stage, Lesson.stage_id == Stage.id)
+        .join(Course, Stage.course_id == Course.id)
+        .where(
+            Course.slug == course_slug,
+            Lesson.status == "outline",
+        )
+        .order_by(Stage.order_index, Lesson.order_index)
+    )
+    if stage_index is not None:
+        stmt = stmt.where(Stage.order_index == stage_index)
+    if cap and cap > 0:
+        stmt = stmt.limit(cap)
+    ids = (await session.execute(stmt)).scalars().all()
+    added = 0
+    for lid in ids:
+        if await enqueue_lesson(session, lid, priority=prio):
             added += 1
     return added
 
@@ -488,6 +526,7 @@ async def worker_loop(stop_event: asyncio.Event | None = None) -> None:
     stop = stop_event or _stop
     tasks: set[asyncio.Task] = set()
     failures = 0
+    warned_budget = False
     log.info("عامل التوليد يعمل (تزامن=%s).", settings.GEN_WORKER_CONCURRENCY)
     try:
         while not stop.is_set():
@@ -497,6 +536,17 @@ async def worker_loop(stop_event: asyncio.Event | None = None) -> None:
             if len(tasks) >= max(1, settings.GEN_WORKER_CONCURRENCY):
                 await asyncio.sleep(1)
                 continue
+            # لا تستهلك مهام الخلفية الحصة المحجوزة للتفاعل الفوري.
+            if not await _bg_budget_ok():
+                if not warned_budget:
+                    log.warning(
+                        "توقّف البناء الخلفي مؤقتا: الميزانية المتبقية أقل من المحجوز (%s%%).",
+                        settings.AI_RESERVE_PCT,
+                    )
+                    warned_budget = True
+                await asyncio.sleep(120)
+                continue
+            warned_budget = False
             async with SessionLocal() as session:
                 job = await _claim_next(session)
             if not job:
@@ -518,6 +568,35 @@ async def worker_loop(stop_event: asyncio.Event | None = None) -> None:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         log.info("توقّف عامل التوليد.")
+
+
+async def prebuild_user_languages(session, user_id: int, *, priority: int | None = None) -> int:
+    """يبني كل دروس اللغات التي يتعلّمها المستخدم فعلا (تدريجيا في الخلفية)."""
+    from core.models import Progress
+
+    slugs = (
+        await session.execute(
+            select(Lesson.language_slug)
+            .join(Progress, Progress.lesson_id == Lesson.id)
+            .where(Progress.user_id == user_id, Lesson.language_slug.isnot(None))
+            .group_by(Lesson.language_slug)
+        )
+    ).scalars().all()
+    added = 0
+    for slug in slugs:
+        if slug:
+            added += await enqueue_prebuild(session, slug, priority=priority)
+    return added
+
+
+async def _bg_budget_ok() -> bool:
+    """هل تسمح الميزانية المتبقية بمواصلة البناء الخلفي؟"""
+    from pipeline.providers import budget_left, budget_reserve
+
+    left = await budget_left()
+    if left is None:
+        return True
+    return left > await budget_reserve()
 
 
 async def _recent_failures() -> int:

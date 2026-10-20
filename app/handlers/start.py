@@ -6,6 +6,7 @@ from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
 from app.keyboards import main_reply_kb, welcome_kb
+from app.handlers.common import spawn
 from core.config import settings
 from core.db import SessionLocal
 from core.logging import get_logger
@@ -13,6 +14,19 @@ from core.repo import get_user_by_telegram
 from app import tg
 
 log = get_logger("bot.start")
+
+
+async def _prebuild_all(user_id: int) -> None:
+    """يبني بالخلفية كل دروس اللغات التي يتعلّمها المستخدم (مرة واحدة عند الدخول)."""
+    from pipeline import jobs
+
+    try:
+        async with SessionLocal() as s:
+            added = await jobs.prebuild_user_languages(s, user_id)
+        if added:
+            log.info("بناء تلقائي عند الدخول: أُدرجت %s مهمة للمستخدم #%s", added, user_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر البناء التلقائي عند الدخول: %s", e)
 
 WELCOME = (
     "🎓 *أكاديمية الأمن السيبراني والبرمجة*\n\n"
@@ -64,6 +78,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode="Markdown",
             reply_markup=main_reply_kb(),
         )
+        if settings.GEN_PREBUILD_ON_OPEN and settings.ai_configured:
+            spawn(_prebuild_all(user.id))
     else:
         await tg.send_text(
             update.effective_message,

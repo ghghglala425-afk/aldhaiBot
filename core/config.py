@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """إعدادات المشروع — تُقرأ من .env مع تحقق صارم عند الإقلاع."""
 from __future__ import annotations
 
@@ -146,13 +146,20 @@ class Settings(BaseSettings):
     # تسخين أول N درس لكل لغة عند بناء المخطط.
     # 0 = لا تسخين تلقائي: كل درس يُولَّد لحظة فتحه فقط (أسرع استجابة وأقل انتظارا).
     GEN_WARM_LESSONS: int = 0
+    # البناء التلقائي الكامل: يبدأ فور فتح المستخدم للغة (كل دروس مخططها في الخلفية).
+    GEN_PREBUILD_ON_OPEN: bool = True
+    # 0 = كل دروس اللغة بلا سقف (قد يستهلك حصة كبيرة).
+    GEN_PREBUILD_MAX: int = 0
+    GEN_PREBUILD_PRIORITY: int = 2
+    # نسبة الميزانية اليومية المحجوزة للتفاعل الفوري (لا تلمسها مهام الخلفية).
+    AI_RESERVE_PCT: int = 25
     # عامل الخلفية داخل عملية البوت
     GEN_WORKER_CONCURRENCY: int = 4
     GEN_QUEUE_POLL: int = 5
     GEN_JOB_MAX_ATTEMPTS: int = 3
     GEN_LESSON_TIMEOUT: int = 1800
     # سقف مهام الطابور (queued+running). 0 = بلا سقف. يحمي الحصة المجانية من الإغراق.
-    GEN_QUEUE_MAX: int = 100
+    GEN_QUEUE_MAX: int = 400
 
     # بيئات الهدف: روابط خارجية بديلة عن الحاويات المحلية. صيغة: slug=url,slug=url
     TARGET_EXTERNAL_URLS: str = ""

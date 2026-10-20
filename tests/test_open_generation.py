@@ -69,10 +69,11 @@ class TestQuotaProtection:
             assert key in ratelimit.LIMITS, f"{key} must stay rate limited"
 
     def test_non_admin_warms_fewer_lessons(self) -> None:
-        """المستخدم العادي يسخّن دروسا أقل من المشرف."""
+        """المستخدم العادي يبني دفعة محدودة؛ المشرف يبني الكل."""
         src = _src("languages.py")
         assert "is_admin_user" in src
-        assert "min(3, settings.GEN_WARM_LESSONS)" in src
+        assert "enqueue_prebuild(s, slug, priority=3, limit=limit)" in src
+        assert "else 5" in src
 
     def test_global_queue_cap_still_applies(self) -> None:
         from core.config import settings

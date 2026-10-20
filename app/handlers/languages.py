@@ -7,7 +7,7 @@ from telegram.constants import ParseMode
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from sqlalchemy import select
 
-from app.handlers.common import current_user
+from app.handlers.common import current_user, spawn
 from app.keyboards import languages_kb
 from app.pagination import nav_row, slice_page, total_pages
 from core.config import settings
@@ -123,6 +123,25 @@ async def language_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "\n".join(lines)[:3900], parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows)
     )
 
+    # بناء تلقائي تدريجي لكل دروس اللغة في الخلفية (فتح أي درس يصبح فوريا).
+    if built and settings.GEN_PREBUILD_ON_OPEN and settings.ai_configured:
+        spawn(_auto_prebuild(slug))
+
+
+async def _auto_prebuild(
+    slug: str, *, stage_index: int | None = None, priority: int | None = None
+) -> None:
+    """يُدرج دروس اللغة المخطّطة (أو مرحلة) للبناء التدريجي في الخلفية بأولوية منخفضة."""
+    from pipeline import jobs
+
+    try:
+        async with SessionLocal() as s:
+            n = await jobs.enqueue_prebuild(s, slug, stage_index=stage_index, priority=priority)
+        if n:
+            log.info("بناء تلقائي خلفي: أُدرجت %s مهمة للغة %s (مرحلة=%s)", n, slug, stage_index)
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر البناء التلقائي للغة %s: %s", slug, e)
+
 
 async def stage_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
@@ -161,6 +180,10 @@ async def stage_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "\n".join(lines)[:3900], parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(rows)
     )
 
+    # المرحلة التي يتصفّحها المستخدم الآن لها الأولوية في البناء الخلفي.
+    if settings.GEN_PREBUILD_ON_OPEN and settings.ai_configured:
+        spawn(_auto_prebuild(slug, stage_index=si, priority=6))
+
 
 async def language_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """بناء مخطط اللغة — متاح لكل المستخدمين بلا حدود زمنية."""
@@ -194,14 +217,14 @@ async def language_warm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     from pipeline import jobs
 
-    # المشرف يسخّن أكثر؛ المستخدم العادي عدد أقل (حماية الحصة المجانية)
+    # المشرف يبني كل دروس اللغة؛ المستخدم العادي دفعة محدودة (حماية الحصة المجانية)
     is_admin_user = update.effective_user.id in settings.admin_ids
-    limit = settings.GEN_WARM_LESSONS if is_admin_user else min(3, settings.GEN_WARM_LESSONS)
+    limit = (settings.GEN_PREBUILD_MAX or 0) if is_admin_user else 5
 
     async with SessionLocal() as s:
-        n = await jobs.enqueue_warm(s, slug, limit)
+        n = await jobs.enqueue_prebuild(s, slug, priority=3, limit=limit)
     await q.answer(
-        f"أُدرج تسخين {n} درسا 🔥" if n else "لا توجد دروس جديدة لتسخينها ✅",
+        f"أُدرج بناء {n} درسا في الخلفية 🔥" if n else "لا توجد دروس جديدة لبنائها ✅",
         show_alert=True,
     )
 

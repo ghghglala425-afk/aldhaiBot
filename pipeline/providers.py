@@ -162,6 +162,26 @@ def func_sum(col):
     return func.coalesce(func.sum(col), 0)
 
 
+async def budget_left() -> int | None:
+    """الميزانية المتبقية اليوم من خارج جلسة (None = بلا سقف)."""
+    from core.db import SessionLocal
+
+    try:
+        async with SessionLocal() as session:
+            return await _budget_left(session)
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر حساب الميزانية: %s", e)
+        return None
+
+
+async def budget_reserve() -> int:
+    """الحصة المحجوزة للتفاعل الفوري (لا تستهلكها مهام الخلفية)."""
+    pct = max(0, min(90, int(getattr(settings, "AI_RESERVE_PCT", 25) or 0)))
+    if settings.AI_DAILY_TOKEN_BUDGET <= 0 or pct == 0:
+        return 0
+    return int(settings.AI_DAILY_TOKEN_BUDGET * pct / 100)
+
+
 async def _can_call(session, spec: ProviderSpec) -> bool:
     row = await _usage_row(session, spec.name)
     if spec.rpd and row.requests >= spec.rpd:
