@@ -5,7 +5,7 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import CommandHandler, ContextTypes
 
-from app.keyboards import main_reply_kb, menu_with_app, welcome_kb
+from app.keyboards import main_reply_kb, welcome_kb
 from core.config import settings
 from core.db import SessionLocal
 from core.logging import get_logger
@@ -16,10 +16,41 @@ log = get_logger("bot.start")
 
 WELCOME = (
     "🎓 *أكاديمية الأمن السيبراني والبرمجة*\n\n"
-    "منصّة تعلّم شاملة: دروس مفصّلة، أكواد حقيقية، مختبرات عملية، "
-    "واختبارات لكل مرحلة.\n\n"
-    "ابدأ بإنشاء حساب أو الدخول."
+    "منصّة تعليمية متكاملة تبني مهاراتك من الصفر إلى الاحتراف، "
+    "بأسلوب عملي قائم على الفهم العميق والتطبيق لا على الحفظ.\n\n"
+    "*ماذا تجد هنا؟*\n"
+    "• 📚 *مسارات منظّمة:* 10 مراحل لكل لغة برمجة، تتدرّج من الأساسيات حتى بناء المشاريع.\n"
+    "• 🔬 *شروح موسّعة:* كل درس يوضّح الفكرة، وسبب الحاجة إليها، والأخطاء الشائعة، مع أكواد حقيقية.\n"
+    "• 🧪 *مختبرات عملية:* تمارين أمنية داخل بيئة معزولة وآمنة تماما.\n"
+    "• ✅ *اختبارات ذكية:* تثبّت الفهم وتفتح المرحلة التالية بعد الاجتياز.\n"
+    "• 📈 *متابعة مستمرة:* نقاط ومستويات وسلاسل يومية ومراجعة ذكية للدروس السابقة.\n\n"
+    "*كيف تبدأ؟*\n"
+    "1️⃣ أنشئ حسابك أو سجّل الدخول من الزرين بالأسفل.\n"
+    "2️⃣ اختر لغة أو مسارا تعلّميا من القائمة.\n"
+    "3️⃣ ادرس الدرس ثم اجتز اختباره لفتح ما بعده.\n"
+    "4️⃣ واصل يوميا، ودع المراجعة الذكية تُعيد لك ما يحتاج تثبيتا.\n\n"
+    "💡 *نصيحة:* لا تنتقل إلى درس جديد قبل أن تُنجز تمرين الدرس الحالي بنفسك.\n\n"
+    "*أوامر سريعة:* /help القائمة الكاملة · /courses الكورسات · /daily درس اليوم"
 )
+
+
+def _returning_text(user) -> str:
+    """رسالة العودة: نفس هوية الترحيب، لكن بخطوات متابعة لا بتسجيل جديد."""
+    name = tg.escape_md(user.username or user.email or "صديقنا")
+    return (
+        f"👋 أهلا بعودتك، *{name}*!\n\n"
+        "🎓 *أكاديمية الأمن السيبراني والبرمجة*\n\n"
+        f"📊 تقدّمك حتى الآن: المستوى {user.level} · {user.xp} نقطة · "
+        f"سلسلة {user.streak_count} يوم.\n\n"
+        "*واصل رحلتك من حيث توقفت:*\n"
+        "• 📚 *الكورسات* — تصفّح المراحل والدروس وحالة كل درس.\n"
+        "• 🌍 *اللغات* — 48 لغة برمجة، لكل منها مسار كامل.\n"
+        "• 🎯 *الدرس اليومي* — جرعة قصيرة تحافظ على الاستمرارية.\n"
+        "• 🏆 *ترتيبي* — قارن تقدّمك مع بقية المتعلّمين.\n\n"
+        "*تذكير سريع:* يُفتح الدرس بعد اجتياز اختبار الدرس الذي قبله، "
+        "والمراجعة الذكية تُبرز ما حان موعد تثبيته.\n\n"
+        "استخدم الأزرار بالأسفل، أو /help لكل الأوامر."
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -27,13 +58,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with SessionLocal() as session:
         user = await get_user_by_telegram(session, tg_id)
     if user:
-        await tg.send_text(update.message, 
-            f"👋 أهلا بعودتك {user.username or user.email}!\nاستخدم الأزرار بالأسفل.",
+        await tg.send_text(
+            update.effective_message,
+            _returning_text(user),
+            parse_mode="Markdown",
             reply_markup=main_reply_kb(),
         )
     else:
-        await tg.send_text(update.message, 
-            WELCOME, parse_mode="Markdown", reply_markup=welcome_kb()
+        await tg.send_text(
+            update.effective_message,
+            WELCOME,
+            parse_mode="Markdown",
+            reply_markup=welcome_kb(),
         )
 
 
