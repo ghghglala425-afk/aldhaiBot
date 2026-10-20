@@ -7,7 +7,6 @@ from telegram.constants import ParseMode
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from sqlalchemy import select
 
-from app.handlers.admin import is_admin
 from app.handlers.common import current_user
 from app.keyboards import languages_kb
 from app.pagination import nav_row, slice_page, total_pages
@@ -113,7 +112,10 @@ async def language_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             ])
         rows.append([InlineKeyboardButton("🔥 تسخين أول دروس", callback_data=f"langwarm:{slug}")])
     else:
-        lines.append("اضغط «بناء المخطط» لإنشاء الخريطة الكاملة فورا (نداء AI واحد).")
+        lines.append(
+            "اضغط «🧩 بناء المخطط» لإنشاء الخريطة الكاملة فورا "
+            "(نداء AI واحد).\n<i>متاح لكل المستخدمين — 3 مخططات في الساعة لكل مستخدم.</i>"
+        )
         rows.append([InlineKeyboardButton("🧩 بناء المخطط", callback_data=f"langbuild:{slug}")])
     rows.append([InlineKeyboardButton("⬅️ كل اللغات", callback_data="langs:0")])
     await q.edit_message_text(
@@ -160,36 +162,57 @@ async def stage_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def language_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """بناء مخطط اللغة — متاح لكل المستخدمين مع حدّ معدّل لكل مستخدم."""
     q = update.callback_query
     slug = q.data.split(":", 1)[1]
-    if not is_admin(update.effective_user.id):
-        await q.answer("🔒 التوليد متاح للمشرف فقط.", show_alert=True)
-        return
     if not settings.ai_configured:
         await q.answer("AI غير مضبوط — لا يمكن بناء المخطط.", show_alert=True)
         return
+
+    from app import ratelimit
+
+    if not await ratelimit.guard(update, "outline"):
+        return
+
     from pipeline import jobs
 
     async with SessionLocal() as s:
+        if await jobs.outline_exists(s, slug):
+            await q.answer("✅ المخطط مبني بالفعل — افتح المرحلة.", show_alert=True)
+            return
+        if await jobs.outline_in_progress(s, slug):
+            await q.answer("⏳ المخطط قيد البناء بالفعل.", show_alert=True)
+            return
         job = await jobs.enqueue_outline(s, slug)
-    await q.answer("أُدرج بناء المخطط في الطابور ✅" if job else "المخطط قيد البناء بالفعل ⏳", show_alert=True)
+    await q.answer("أُدرج بناء المخطط في الطابور ✅", show_alert=True)
     log.info("طلب بناء مخطط %s (job=%s)", slug, job.id if job else None)
 
 
 async def language_warm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """تسخين أول دروس اللغة — متاح لكل المستخدمين مع حدّ معدّل."""
     q = update.callback_query
     slug = q.data.split(":", 1)[1]
-    if not is_admin(update.effective_user.id):
-        await q.answer("🔒 التسخين متاح للمشرف فقط.", show_alert=True)
-        return
     if not settings.ai_configured:
         await q.answer("AI غير مضبوط.", show_alert=True)
         return
+
+    from app import ratelimit
+
+    if not await ratelimit.guard(update, "warm"):
+        return
+
     from pipeline import jobs
 
+    # المشرف يسخّن أكثر؛ المستخدم العادي عدد أقل (حماية الحصة المجانية)
+    is_admin_user = update.effective_user.id in settings.admin_ids
+    limit = settings.GEN_WARM_LESSONS if is_admin_user else min(3, settings.GEN_WARM_LESSONS)
+
     async with SessionLocal() as s:
-        n = await jobs.enqueue_warm(s, slug)
-    await q.answer(f"أُدرج تسخين {n} درسا 🔥" if n else "كل الدروس مسخّنة مسبقا ✅", show_alert=True)
+        n = await jobs.enqueue_warm(s, slug, limit)
+    await q.answer(
+        f"أُدرج تسخين {n} درسا 🔥" if n else "لا توجد دروس جديدة لتسخينها ✅",
+        show_alert=True,
+    )
 
 
 def register_handlers(app) -> None:

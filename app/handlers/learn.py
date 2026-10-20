@@ -380,17 +380,18 @@ async def _send_assets(message, assets: list[LessonAsset]) -> None:
 
 
 async def generate_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """توليد درس مخطط فورا (يُدرج مهمة ذات أولوية عالية)."""
-    from app.handlers.admin import is_admin
-
+    """توليد درس مخطط فورا — متاح لكل المستخدمين مع حدّ معدّل."""
     q = update.callback_query
     lesson_id = int(q.data.split(":")[1])
-    if not is_admin(update.effective_user.id):
-        await q.answer("🔒 التوليد اليدوي متاح للمشرف فقط.", show_alert=True)
-        return
     if not settings.ai_configured:
         await q.answer("AI غير مضبوط — تعذّر التوليد.", show_alert=True)
         return
+
+    from app import ratelimit
+
+    if not await ratelimit.guard(update, "gen"):
+        return
+
     from pipeline import jobs
 
     async with SessionLocal() as s:

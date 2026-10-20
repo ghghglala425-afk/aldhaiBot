@@ -101,6 +101,32 @@ async def enqueue_outline(session, language: str, *, priority: int = 1) -> Optio
     )
 
 
+async def outline_exists(session, language: str) -> bool:
+    """هل مخطط هذه اللغة مبني بالفعل؟ (يمنع إعادة توليده بلا فائدة)."""
+    from pipeline.taxonomy import language_course_slug
+
+    course_slug = language_course_slug(language)
+    n = await session.scalar(
+        select(func.count())
+        .select_from(Lesson)
+        .join(Stage, Lesson.stage_id == Stage.id)
+        .join(Course, Stage.course_id == Course.id)
+        .where(Course.slug == course_slug)
+    )
+    return bool(n)
+
+
+async def outline_in_progress(session, language: str) -> bool:
+    """هل بناء المخطط جارٍ الآن؟"""
+    job = await session.scalar(
+        select(GenerationJob.id).where(
+            GenerationJob.dedup_key == f"outline:{language}",
+            GenerationJob.status.in_(("queued", "running")),
+        )
+    )
+    return job is not None
+
+
 async def enqueue_all_languages(session) -> int:
     rows = list((await session.execute(select(Language.slug))).scalars().all())
     added = 0
