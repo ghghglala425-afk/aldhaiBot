@@ -232,16 +232,48 @@ def _esc(text: str) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+class _ChatShim:
+    """واجهة رسائل مختصرة تُتيح الدفع التلقائي للدرس بعد انتهاء التوليد."""
+
+    def __init__(self, bot, chat_id: int, reply_to=None):
+        self.bot = bot
+        self.chat_id = int(chat_id)
+        self.reply_to = getattr(reply_to, "message_id", None)
+
+    async def reply_text(self, text, **kwargs):
+        return await self.bot.send_message(self.chat_id, text, **kwargs)
+
+    async def reply_audio(self, *a, **kw):
+        return await self.bot.send_audio(self.chat_id, *a, **kw)
+
+    async def reply_video(self, *a, **kw):
+        return await self.bot.send_video(self.chat_id, *a, **kw)
+
+    async def reply_photo(self, *a, **kw):
+        return await self.bot.send_photo(self.chat_id, *a, **kw)
+
+    async def reply_document(self, *a, **kw):
+        return await self.bot.send_document(self.chat_id, *a, **kw)
+
+
+_bg_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> None:
+    """يشغّل مهمة خلفية مع حفظ مرجع (كي لا يجمعها جامع المهملات)."""
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+
+
 async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يعرض الدرس خلال أقل من ثانية، وإن كان مخططا يبنيه بالخلفية ويدفعه تلقائيا."""
     q = update.callback_query
     await q.answer()
     lesson_id = int(q.data.split(":")[1])
-    is_outline = False
-    assets: list[LessonAsset] = []
-    progress_pct = None
-    lesson_no = None
-    total_lessons = None
-    next_title = ""
+    chat_id = update.effective_chat.id
+    bot = context.bot
+
     async with SessionLocal() as s:
         lesson = await s.get(Lesson, lesson_id)
         if not lesson:
@@ -251,19 +283,76 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not user:
             await tg.edit_text(q, "سجّل دخولك أولا عبر /start.")
             return
-        # التحقق من فتح الدرس (الفتح المتسلسل)
-        from core.learning import is_unlocked, ordered_lessons
+        from core.learning import is_unlocked
 
         if not await is_unlocked(s, user, lesson):
-            await tg.edit_text(q, 
+            await tg.edit_text(
+                q,
                 "🔒 هذا الدرس مقفل. يجب إكمال الدرس السابق أولاً.",
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN,
             )
             return
         is_outline = lesson.status == "outline" or not lesson.content_md
-
-        # ---------- رقم الدرس + التقدم + الدرس التالي ----------
         try:
+            await start_lesson(s, user.id, lesson_id)
+        except Exception as e:  # noqa: BLE001
+            log.warning("تعذّر تسجيل بدء الدرس: %s", e)
+
+    # (1) شاشة الدرس تظهر فورا — بلا أي انتظار للذكاء الاصطناعي
+    await _render_lesson(bot, chat_id, lesson_id, reply_to=update.effective_message, user=user)
+
+    # (2) البناء في الخلفية، ثم يصل المحتوى الكامل تلقائيا في نفس المحادثة
+    if is_outline:
+        if settings.GEN_LAZY_ON_OPEN and settings.ai_configured:
+            _spawn(_auto_build_and_push(bot, chat_id, lesson_id))
+    else:
+        _spawn(_prefetch_next(lesson_id))
+
+
+async def _render_lesson(
+    bot,
+    chat_id: int,
+    lesson_id: int,
+    *,
+    reply_to=None,
+    notice: str | None = None,
+    user=None,
+) -> None:
+    """يرسل شاشة الدرس كاملة (ترويسة/محتوى/أكواد/أزرار). لا يستدعي AI إطلاقا."""
+    message = _ChatShim(bot, chat_id, reply_to)
+    is_outline = False
+    assets: list[LessonAsset] = []
+    codes: list[CodeSample] = []
+    labs = []
+    progress_pct = None
+    lesson_no = None
+    total_lessons = None
+    next_title = ""
+    lesson = None
+
+    if notice:
+        await tg.send_text(
+            message, notice, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+        )
+
+    async with SessionLocal() as s:
+        lesson = await s.get(Lesson, lesson_id)
+        if not lesson:
+            return
+        codes = list(
+            (await s.execute(
+                select(CodeSample).where(CodeSample.lesson_id == lesson_id).order_by(CodeSample.order_index)
+            )).scalars().all()
+        )
+        labs = await labs_for_lesson(s, lesson_id)
+        assets = list(
+            (await s.execute(select(LessonAsset).where(LessonAsset.lesson_id == lesson_id))).scalars().all()
+        )
+        is_outline = lesson.status == "outline" or not lesson.content_md
+
+        try:
+            from core.learning import ordered_lessons
+
             stage = await s.get(Stage, lesson.stage_id)
             if stage:
                 siblings = await ordered_lessons(s, stage.course_id)
@@ -276,90 +365,13 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         nxt = await s.get(Lesson, ids[idx + 1])
                         if nxt:
                             next_title = nxt.title
-                    rows = await status_map(s, user, stage.course_id)
-                    done = sum(1 for r in rows if r["status"] == STATUS_PASSED)
-                    progress_pct = round(done / max(1, len(rows)) * 100)
+                    if user is not None:
+                        rows = await status_map(s, user, stage.course_id)
+                        done = sum(1 for r in rows if r["status"] == STATUS_PASSED)
+                        progress_pct = round(done / max(1, len(rows)) * 100)
         except Exception as e:  # noqa: BLE001
             log.debug("تعذّر حساب التقدم: %s", e)
 
-        # ---------- تسجيل بدء التعلّم ----------
-        try:
-            await start_lesson(s, user.id, lesson_id)
-        except Exception as e:  # noqa: BLE001
-            log.warning("تعذّر تسجيل بدء الدرس: %s", e)
-
-    # ---------- التوليد الفوري عند الفتح (Lazy fill سريع) ----------
-    if is_outline and settings.GEN_LAZY_ON_OPEN and settings.ai_configured:
-        status_msg = None
-        base = (
-            "⚡ <b>نبني هذا الدرس الآن</b>\n"
-            "<i>شرح عميق، أمثلة عملية، وأسئلة — خلال لحظات.</i>"
-        )
-        try:
-            status_msg = await update.effective_message.reply_text(
-                base,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-        except Exception as e:  # noqa: BLE001
-            log.debug("تعذّر إرسال رسالة التوليد: %s", e)
-
-        from pipeline import jobs
-
-        stop = asyncio.Event()
-        ticker = (
-            asyncio.create_task(
-                animate_status(status_msg, stop, base, note="نكتب شرحا معمّقا وأمثلة واختبارا.")
-            )
-            if status_msg
-            else None
-        )
-        res = await jobs.generate_lesson_now(lesson_id, fast=True, timeout=115)
-        stop.set()
-        if ticker is not None:
-            ticker.cancel()
-            try:
-                await ticker
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001
-                pass
-        if status_msg is not None:
-            try:
-                await status_msg.delete()
-            except Exception:  # noqa: BLE001
-                pass
-        if not res.get("ok"):
-            log.warning("توليد الدرس #%s فشل/تأخر: %s", lesson_id, res.get("error"))
-            try:
-                async with SessionLocal() as s:
-                    await jobs.enqueue_lesson(s, lesson_id, priority=9)
-            except Exception as e:  # noqa: BLE001
-                log.warning("تعذّر إدراج توليد احتياطي: %s", e)
-            problem = res.get("error") or "انتهت المهلة"
-            await tg.send_text(
-                update.effective_message,
-                "⚠️ <b>تعذّر تجهيز الدرس الآن</b>\n"
-                f"{ai_error_text(problem)}\n\n"
-                "<i>أُدرج الدرس في قائمة التوليد التلقائي — أعد فتح الدرس بعد لحظات.</i>",
-                parse_mode=ParseMode.HTML,
-            )
-
-    # إعادة تحميل الدرس والأكواد بعد التوليد
-    async with SessionLocal() as s:
-        lesson = await s.get(Lesson, lesson_id) or lesson
-        codes = list(
-            (await s.execute(
-                select(CodeSample).where(CodeSample.lesson_id == lesson_id).order_by(CodeSample.order_index)
-            )).scalars().all()
-        )
-        labs = await labs_for_lesson(s, lesson_id)
-        assets = list(
-            (await s.execute(select(LessonAsset).where(LessonAsset.lesson_id == lesson_id))).scalars().all()
-        )
-        is_outline = lesson.status == "outline" or not lesson.content_md
-
-    # ---------- الترويسة ----------
     header = lv.render_header(
         lesson.title,
         lesson.summary or "",
@@ -370,16 +382,20 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         progress_percent=progress_pct,
     )
     objectives = lv.render_objectives(lesson.objectives)
-    await tg.send_text(update.effective_message, 
-        (header + objectives)[:3900], parse_mode=ParseMode.HTML, disable_web_page_preview=True
+    await tg.send_text(
+        message, (header + objectives)[:3900],
+        parse_mode=ParseMode.HTML, disable_web_page_preview=True,
     )
 
     if is_outline:
         if not settings.ai_configured:
             note = "🕓 هذا الدرس <b>مخطّط</b> — محتواه سيُولَّد تلقائيا عند تفعيل المساعد الذكي (AI)."
         else:
-            note = "🕓 هذا الدرس <b>مخطّط</b> — المحتوى قيد التوليد في الخلفية. اضغط «🔄 تحديث» بعد قليل."
-        await tg.send_text(update.effective_message, note, parse_mode=ParseMode.HTML)
+            note = (
+                "🕓 <b>المحتوى قيد البناء الآن</b> — سيصلك الشرح الكامل والأمثلة والأسئلة "
+                "هنا تلقائيا بعد لحظات (بلا حاجة لأي زر)."
+            )
+        await tg.send_text(message, note, parse_mode=ParseMode.HTML)
 
     # ---------- المحتوى ----------
     if lesson.content_md:
@@ -388,26 +404,26 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if not body.strip():
                 continue
             chunk = lv.render_section(title, lv.md_to_tg(body), index=i)
-            await _send_html_chunks(update.effective_message, chunk)
+            await _send_html_chunks(message, chunk)
 
     # ---------- نقاط المفتاح ----------
     key_points = lv.render_key_points(lesson.key_points or [])
     if key_points:
-        await tg.send_text(update.effective_message, key_points[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(message, key_points[:3900], parse_mode=ParseMode.HTML)
 
     # ---------- خطّاف الذاكرة ----------
     hook = lv.render_memory_hook(lesson.memory_hook or "")
     if hook:
-        await tg.send_text(update.effective_message, hook[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(message, hook[:3900], parse_mode=ParseMode.HTML)
 
     # ---------- للتوسّع أكثر ----------
     extra = lv.render_further_reading(getattr(lesson, "further_reading", None))
     if extra:
-        await tg.send_text(update.effective_message, extra[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(message, extra[:3900], parse_mode=ParseMode.HTML)
 
     # ---------- الأكواد ----------
     if codes:
-        await _send_code_blocks(update.effective_message, codes)
+        await _send_code_blocks(message, codes)
 
     # ---------- التنبيهات ----------
     gotchas: list[str] = []
@@ -419,7 +435,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     sec_notes = list(dict.fromkeys(sec_notes))[:6]
     warn = lv.render_warnings(gotchas, sec_notes)
     if warn:
-        await tg.send_text(update.effective_message, warn[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(message, warn[:3900], parse_mode=ParseMode.HTML)
 
     # ---------- بطاقة المراجعة ----------
     review = lv.render_review_card(
@@ -429,9 +445,9 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         next_step=next_title,
     )
     if review:
-        await tg.send_text(update.effective_message, review[:3900], parse_mode=ParseMode.HTML)
+        await tg.send_text(message, review[:3900], parse_mode=ParseMode.HTML)
 
-    await _send_assets(update.effective_message, assets)
+    await _send_assets(message, assets)
 
     # ---------- الأزرار ----------
     buttons: list[list[InlineKeyboardButton]] = []
@@ -470,10 +486,125 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ]
     )
     buttons.append([InlineKeyboardButton("📤 تصدير الدرس", callback_data=f"export:{lesson_id}")])
-    await tg.send_text(update.effective_message, 
-        "جاهز؟" if not is_outline else "الدرس مخطط حاليا 👆",
+    await tg.send_text(
+        message,
+        "جاهز؟" if not is_outline else "المحتوى قيد البناء تلقائيا 👆",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
+
+
+async def _auto_build_and_push(bot, chat_id: int, lesson_id: int) -> None:
+    """يبني الدرس في الخلفية، ثم يدفع محتواه الكامل تلقائيا للمستخدم."""
+    from pipeline import jobs
+
+    base = (
+        "⚡ <b>نبني هذا الدرس الآن…</b>\n"
+        "<i>سيصلك الشرح الكامل والأمثلة والأسئلة هنا تلقائيا.</i>"
+    )
+    status = None
+    try:
+        status = await bot.send_message(
+            chat_id, base, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+        )
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر إرسال رسالة البناء: %s", e)
+
+    stop = asyncio.Event()
+    ticker = (
+        asyncio.create_task(animate_status(status, stop, base, note="نكتب الشرح والأمثلة والاختبار."))
+        if status
+        else None
+    )
+    try:
+        res = await jobs.generate_lesson_now(lesson_id, fast=True, timeout=115)
+    except Exception as e:  # noqa: BLE001
+        log.exception("فشل بناء الدرس #%s: %s", lesson_id, e)
+        res = {"ok": False, "error": str(e)[:200]}
+    stop.set()
+    if ticker is not None:
+        ticker.cancel()
+        try:
+            await ticker
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+
+    if res.get("ok"):
+        if status is not None:
+            try:
+                await status.delete()
+            except Exception:  # noqa: BLE001
+                pass
+        await _render_lesson(
+            bot, chat_id, lesson_id, notice="✅ <b>الدرس جاهز</b> — إليك الشرح الكامل:"
+        )
+        _spawn(_prefetch_next(lesson_id))
+        return
+
+    log.warning("بناء الدرس #%s فشل/تأخر: %s", lesson_id, res.get("error"))
+    try:
+        async with SessionLocal() as s:
+            await jobs.enqueue_lesson(s, lesson_id, priority=9)
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر إدراج توليد احتياطي: %s", e)
+    problem = res.get("error") or "انتهت المهلة"
+    text = (
+        "⚠️ <b>تعذّر تجهيز الدرس الآن</b>\n"
+        f"{ai_error_text(problem)}\n\n"
+        "<i>أُدرج الدرس في قائمة التوليد التلقائي — سيصلك تلقائيا عند اكتماله.</i>"
+    )
+    if status is not None:
+        try:
+            await tg.edit_text(status, text, parse_mode=ParseMode.HTML)
+        except Exception:  # noqa: BLE001
+            pass
+    _spawn(_push_when_ready(bot, chat_id, lesson_id))
+
+
+async def _push_when_ready(
+    bot, chat_id: int, lesson_id: int, *, tries: int = 30, delay: float = 10.0
+) -> None:
+    """يراقب الدرس في الخلفية ويدفعه للمستخدم فور اكتماله تلقائيا."""
+    for _ in range(tries):
+        await asyncio.sleep(delay)
+        ready = False
+        try:
+            async with SessionLocal() as s:
+                lesson = await s.get(Lesson, lesson_id)
+                ready = bool(lesson and lesson.content_md and lesson.status != "outline")
+        except Exception as e:  # noqa: BLE001
+            log.debug("تعذّر فحص جهوزية الدرس #%s: %s", lesson_id, e)
+        if ready:
+            await _render_lesson(
+                bot, chat_id, lesson_id, notice="✅ <b>الدرس جاهز</b> — إليك الشرح الكامل:"
+            )
+            return
+
+
+async def _prefetch_next(lesson_id: int, n: int = 2) -> None:
+    """يُحضّر الدرسين التاليين مسبقا كي يظهرا فورا عند فتحهما."""
+    from pipeline import jobs
+
+    try:
+        from core.learning import ordered_lessons
+
+        async with SessionLocal() as s:
+            lesson = await s.get(Lesson, lesson_id)
+            if not lesson:
+                return
+            stage = await s.get(Stage, lesson.stage_id)
+            if not stage:
+                return
+            siblings = await ordered_lessons(s, stage.course_id)
+            ids = [x.id for x in siblings]
+            if lesson_id not in ids:
+                return
+            idx = ids.index(lesson_id)
+            for nid in ids[idx + 1: idx + 1 + n]:
+                nxt = await s.get(Lesson, nid)
+                if nxt and (nxt.status == "outline" or not nxt.content_md):
+                    await jobs.enqueue_lesson(s, nid, priority=4)
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر التحضير المسبق: %s", e)
 
 
 async def _send_assets(message, assets: list[LessonAsset]) -> None:
@@ -500,15 +631,8 @@ async def generate_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await q.answer("AI غير مضبوط — تعذّر التوليد.", show_alert=True)
         return
 
-    from pipeline import jobs
-
-    async with SessionLocal() as s:
-        job = await jobs.enqueue_lesson(s, lesson_id, priority=9)
-    await q.answer(
-        "أُدرج التوليد — اضغط «تحديث» بعد قليل ⏳" if job else "التوليد قيد التنفيذ بالفعل ⏳",
-        show_alert=True,
-    )
-    context.user_data["auto_refresh"] = lesson_id
+    await q.answer("بدأ البناء — سيصلك الدرس تلقائيا بعد لحظات ⏳")
+    _spawn(_auto_build_and_push(context.bot, update.effective_chat.id, lesson_id))
 
 
 # ---------------------------------------------------------------------
