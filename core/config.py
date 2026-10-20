@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     GEN_MIN_CODES: int = 6
     # أمثلة الكود في التوليد الفوري عند فتح الدرس (أسرع، ثم يُثرى لاحقا)
     GEN_FAST_CODES: int = 4
+    # طول الشرح الأدنى: الفوري أخف قليلا كي يظهر بسرعة، والخلفي موسّع.
+    GEN_FAST_MIN_CHARS: int = 2800
+    GEN_MIN_CHARS: int = 4000
     GEN_MIN_QUESTIONS: int = 8
     GEN_MIN_USAGES: int = 8
     GEN_ENRICH_ATLAS: bool = True
@@ -140,8 +143,9 @@ class Settings(BaseSettings):
     GEN_OUTLINE_ENABLED: bool = True
     # توليد تلقائي عند فتح درس مخطط (Lazy fill)
     GEN_LAZY_ON_OPEN: bool = True
-    # تسخين أول N درس لكل لغة عند بناء المخطط
-    GEN_WARM_LESSONS: int = 20
+    # تسخين أول N درس لكل لغة عند بناء المخطط.
+    # 0 = لا تسخين تلقائي: كل درس يُولَّد لحظة فتحه فقط (أسرع استجابة وأقل انتظارا).
+    GEN_WARM_LESSONS: int = 0
     # عامل الخلفية داخل عملية البوت
     GEN_WORKER_CONCURRENCY: int = 4
     GEN_QUEUE_POLL: int = 5

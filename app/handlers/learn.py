@@ -314,7 +314,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if status_msg
             else None
         )
-        res = await jobs.generate_lesson_now(lesson_id, fast=True, timeout=180)
+        res = await jobs.generate_lesson_now(lesson_id, fast=True, timeout=115)
         stop.set()
         if ticker is not None:
             ticker.cancel()
@@ -341,7 +341,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 update.effective_message,
                 "⚠️ <b>تعذّر تجهيز الدرس الآن</b>\n"
                 f"{ai_error_text(problem)}\n\n"
-                "<i>أُدرج الدرس في قائمة التوليد التلقائي — اضغط «🔄 تحديث» بعد قليل.</i>",
+                "<i>أُدرج الدرس في قائمة التوليد التلقائي — أعد فتح الدرس بعد لحظات.</i>",
                 parse_mode=ParseMode.HTML,
             )
 

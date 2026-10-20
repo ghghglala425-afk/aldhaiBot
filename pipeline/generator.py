@@ -42,7 +42,7 @@ SYSTEM = """أنت خبير تعليمي عالمي في البرمجة والأ
 - الشرح بالعربية الفصحى المبسطة، مع شرح المصطلح الإنجليزي عند أول ظهور له.
 
 قواعد العمق (الأهم):
-- content_md يجب أن يكون درسا كاملا حقيقيا لا ملخصا: **3500 حرف على الأقل** (المثالي 4500).
+- content_md يجب أن يكون درسا كاملا حقيقيا لا ملخصا: **%d حرف على الأقل** (المثالي أكثر من ذلك).
 - استخدم هذه الأقسام بالترتيب وبالعناوين الحرفية:
   `## المفهوم ببساطة` ثم `## لماذا هذا مهم؟` ثم `## المتطلبات والمصطلحات` ثم
   `## التفاصيل خطوة بخطوة` ثم `## مثال عملي مشروح` ثم `## أخطاء شائعة` ثم
@@ -63,7 +63,13 @@ SYSTEM = """أنت خبير تعليمي عالمي في البرمجة والأ
 
 
 def _build_user(
-    topic: str, language: str, difficulty: str, context: str = "", *, min_codes: int
+    topic: str,
+    language: str,
+    difficulty: str,
+    context: str = "",
+    *,
+    min_codes: int,
+    min_chars: int,
 ) -> str:
     min_questions = min_codes * 2
     return (
@@ -73,7 +79,7 @@ def _build_user(
         f"{('سياق إضافي: ' + context) if context else ''}\n"
         f"تذكّر: {min_codes} مثال كود على الأقل وكلها تعمل بلا أخطاء.\n"
         f"مهم جدا: لكل كود سؤالان اختبار على الأقل (إجمالي {min_questions} سؤالا على الأقل).\n"
-        "مهم جدا: content_md شرح موسّع لا يقل عن 3500 حرف، بفقرات كاملة ونقاط تحت كل قسم، "
+        f"مهم جدا: content_md شرح موسّع لا يقل عن {min_chars} حرف، بفقرات كاملة ونقاط تحت كل قسم، "
         "وليس مجرد سطور قصيرة. الشرح يجب أن يكفي متعلما مبتدئا لفهم الموضوع وتطبيقه بلا مساعدة."
     )
 
@@ -92,7 +98,8 @@ async def generate_lesson(
     سريع إن توفّر، بلا إثراء موسوعة الأكواد (يُؤجَّل للخلفية).
     """
     min_codes = settings.GEN_FAST_CODES if fast else settings.GEN_MIN_CODES
-    system = SYSTEM % (language, min_codes, min_codes * 2)
+    min_chars = settings.GEN_FAST_MIN_CHARS if fast else settings.GEN_MIN_CHARS
+    system = SYSTEM % (language, min_codes, min_codes * 2, min_chars)
     repairs = 1 if fast else settings.GEN_MAX_REPAIRS
     model = settings.outline_model if fast else None
     report = VerifyReport(passed=False)
@@ -100,7 +107,9 @@ async def generate_lesson(
 
     for attempt in range(1, repairs + 2):
         if attempt == 1:
-            user = _build_user(topic, language, difficulty, context, min_codes=min_codes)
+            user = _build_user(
+                topic, language, difficulty, context, min_codes=min_codes, min_chars=min_chars
+            )
         else:
             assert lesson is not None
             user = (

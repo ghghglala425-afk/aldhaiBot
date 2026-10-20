@@ -225,6 +225,12 @@ async def post_init(app: Application) -> None:
     setup_jobs(app)
     from pipeline import jobs
 
+    # استرجاع المهام العالقة من العملية السابقة قبل تشغيل العامل.
+    try:
+        await jobs.recover_stale_jobs(all_running=True)
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر استرجاع المهام المعلّقة: %s", e)
+
     jobs.start_worker()
 
 

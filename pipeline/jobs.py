@@ -37,9 +37,21 @@ _stop = asyncio.Event()
 _worker_task: asyncio.Task | None = None
 _background_tasks: set[asyncio.Task] = set()
 
+# بعد هذه المدة تُعتبر مهمة running معلّقة (تعطّل/إعادة نشر) ويُعاد توليدها.
+STALE_JOB_SECONDS = 90.0
+
 
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
+
+
+def _age_seconds(ts: dt.datetime | None) -> float:
+    """عمر الطابع الزمني بالثواني (يتعامل مع القيم الساذجة من SQLite)."""
+    if ts is None:
+        return 1e9
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=dt.timezone.utc)
+    return (_now() - ts).total_seconds()
 
 
 # ---------------------------------------------------------------------
@@ -322,12 +334,13 @@ def _schedule_enrichment(lesson_id: int) -> None:
 
 
 async def generate_lesson_now(
-    lesson_id: int, *, fast: bool = True, timeout: float = 150.0
+    lesson_id: int, *, fast: bool = True, timeout: float = 135.0, _force: bool = False
 ) -> dict:
     """يولّد درسا مخططا فورا في مسار الاستدعاء (بلا انتظار العامل).
 
     يمنع التوليد المكرر عبر صف مهمة بحالة running. إن كانت هناك مهمة جارية
-    بالفعل ينتظر نتيجتها بدل إهدار حصة AI.
+    بالفعل ينتظر نتيجتها بدل إهدار حصة AI، إلا إذا تجاوزت عمر STALE_JOB_SECONDS
+    (فاستلمها) أو فشلت (فيُعاد المحاولة).
     """
     key = f"lesson:{lesson_id}"
     deadline = time.monotonic() + max(10.0, timeout)
@@ -345,7 +358,12 @@ async def generate_lesson_now(
             job = await session.scalar(
                 select(GenerationJob).where(GenerationJob.dedup_key == key)
             )
-            if job and job.status == "running":
+            if (
+                not _force
+                and job
+                and job.status == "running"
+                and _age_seconds(job.updated_at) < STALE_JOB_SECONDS
+            ):
                 job_id = job.id
             else:
                 if job is None:
@@ -353,6 +371,12 @@ async def generate_lesson_now(
                         kind="lesson", dedup_key=key, lesson_id=lesson_id, priority=10
                     )
                     session.add(job)
+                elif job.status == "running":
+                    # مهمة معلّقة من عملية سابقة (إعادة نشر) أو تعطّل العامل: استلمها.
+                    log.warning(
+                        "استلام مهمة معلّقة #%s للدرس #%s (عمرها %.0fث).",
+                        job.id, lesson_id, _age_seconds(job.updated_at),
+                    )
                 job.status = "running"
                 job.error = None
                 job.started_at = _now()
@@ -383,14 +407,19 @@ async def generate_lesson_now(
 
     # مهمة جارية بالفعل: انتظر انتهاءها بدل التوليد المكرر.
     while time.monotonic() < deadline:
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0.75)
         async with SessionLocal() as session:
             lesson = await session.get(Lesson, lesson_id)
             if lesson and lesson.status != "outline" and lesson.content_md:
                 return {"ok": True, "skipped": True}
             job = await session.get(GenerationJob, job_id)
             if job and job.status == "failed":
-                return {"ok": False, "error": job.error or "فشل التوليد"}
+                break
+    if not _force:
+        # إما فشلت المهمة الأخرى أو تجاوزت المهلة: حاول التوليد بنفسك مرة واحدة.
+        return await generate_lesson_now(
+            lesson_id, fast=fast, timeout=max(20.0, deadline - time.monotonic()), _force=True
+        )
     return {
         "ok": False,
         "error": "انتهت مهلة الانتظار — أُكمل التوليد في الخلفية",
@@ -429,12 +458,17 @@ async def process_job(job_id: int) -> dict:
             if job.kind == "outline":
                 res = await _outline_job(session, job)
             elif job.kind == "lesson":
-                res = await _generate_lesson_job(session, job)
+                # المسار الخلفي يستخدم التوليد الفوري أيضا: أسرع بكثير ولا يحجب
+                # العامل، والإثراء الموسوعي يتم بعدها في مهمة مستقلة.
+                res = await _generate_lesson_job(session, job, fast=True)
             else:
                 res = {"ok": False, "error": f"نوع غير مدعوم: {job.kind}"}
         except Exception as e:  # noqa: BLE001
             log.exception("فشل المهمة #%s: %s", job.id, e)
             res = {"ok": False, "error": str(e)[:300]}
+
+        if res.get("ok") and job.kind == "lesson" and job.lesson_id:
+            _schedule_enrichment(job.lesson_id)
 
         job = await session.get(GenerationJob, job_id)
         if job:
@@ -507,6 +541,34 @@ def start_worker() -> asyncio.Task:
         return _worker_task
     _worker_task = asyncio.create_task(worker_loop())
     return _worker_task
+
+
+async def recover_stale_jobs(*, all_running: bool = False) -> int:
+    """يعيد المهام المعلّقة إلى الطابور.
+
+    all_running=True عند بدء البوت: أي مهمة بحالة running ماتت مع العملية
+    السابقة (إعادة نشر) فيجب استرجاعها، وإلا بقي الدرس عالقا إلى الأبد.
+    """
+    threshold = 0.0 if all_running else 5 * 60.0
+    n = 0
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(
+                select(GenerationJob).where(GenerationJob.status == "running")
+            )
+        ).scalars().all()
+        for job in rows:
+            if threshold == 0.0 or _age_seconds(job.updated_at) > threshold:
+                job.status = "queued"
+                job.updated_at = _now()
+                job.error = None
+                job.attempts = 0
+                n += 1
+        if n:
+            await session.commit()
+    if n:
+        log.warning("استُرجعت %s مهمة معلّقة إلى الطابور.", n)
+    return n
 
 
 async def stop_worker() -> None:
