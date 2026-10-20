@@ -1,7 +1,10 @@
 # 🚂 النشر على Railway (10 دقائق)
 
 دليل نشر بوت **أكاديمية الأمن السيبراني والبرمجة** على [Railway](https://railway.app)
-مع HTTPS ونطاق عام تلقائي — **بدون SSH، بدون خادم، بدون إعداد DNS**.
+مع HTTPS ونطاق عام تلقائيا — **بدون SSH، بدون خادم، بدون إعداد DNS**.
+
+> ℹ️ **خدمة واحدة تكفي:** البوت فقط. لا حاجة لخدمة API منفصلة (وهي اختيارية
+> لتطبيق Mini App داخل تيليجرام فقط).
 
 ---
 
@@ -11,7 +14,7 @@
 |---|---|
 | حساب GitHub فيه المستودع | ✅ `ghghglala425-afk/aldhaiBot` |
 | حساب Railway | ⬜ سجّل بـ GitHub (مجاني، بدون كرت ائتمان في Trial) |
-| توكن البوت | ✅ من @BotFather |
+| توكن البوت | ⬜ **جديد** من @BotFather (القديم أُلغي لأسباب أمنية) |
 | مفتاح Gemini | ✅ من [Google AI Studio](https://aistudio.google.com/apikey) |
 
 ---
@@ -107,9 +110,20 @@ https://<نطاق-خدمتك>.up.railway.app/diag
 
 ```json
 {
+  "status": "ok",
+  "ready": true,
   "token_valid": true,
   "bot_username": "TrsttryBot",
-  "database": {"kind": "postgresql", "connected": true, "error": null},
+  "admins": [5444436820],
+  "admins_configured": true,
+  "database": {
+    "kind": "postgresql",
+    "connected": true,
+    "fallback_reason": null,
+    "misconfigured": false,
+    "persistent": true,
+    "last_init_ok": true
+  },
   "ai": {"configured": true, "providers": ["gemini"], "model": "gemini-3.5-flash-lite"},
   "errors": [], "warnings": []
 }
@@ -118,7 +132,10 @@ https://<نطاق-خدمتك>.up.railway.app/diag
 | الحقل | معناه |
 |---|---|
 | `token_valid` | `false` يعني أن التوكن مرفوض من تيليجرام (أعد issuance من @BotFather) |
-| `database.connected` | `false` يعني أن Postgres غير موصول |
+| `ready` | `true` يعني أن الخدمة تهيّأت بالكامل |
+| `database.kind` | `postgresql` ✅ · `sqlite` ❌ (البيانات تضيع عند كل نشر) |
+| `database.persistent` | `true` يعني أن البيانات تصمد |
+| `admins_configured` | `false` يعني أن `ADMIN_IDS` غير مضبوط — أوامر المشرف لن تعمل |
 | `errors` / `warnings` | مشاكل الإعدادات بالتفصيل |
 
 ### 🔍 للتأكد من القاعدة المستعملة فعليا
@@ -149,7 +166,8 @@ GET https://<your-service>.up.railway.app/health
 |---|---|---|
 | `BOT_TOKEN` | `‏<من @BotFather>` | ⚠️ سري |
 | `GEMINI_API_KEY` | `‏<من AI Studio>` | ⚠️ سري |
-| `ADMIN_IDS` | `5444436820` | معرّفك الرقمي |
+| `ADMIN_IDS` | `5444436820` | ⭐ **معرّفك الرقمي — بدونه أوامر المشرف لا تعمل** |
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | ⭐ **بدونه البيانات في SQLite مؤقتة وتضيع** |
 | `AI_FREE_MODE` | `1` | الوضع المجاني |
 | `AI_PROVIDER_ORDER` | `gemini,groq,openrouter` | ترتيب المزوّدين |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | ⚠️ `2.5-flash-lite` لم يعد متاحا |
@@ -157,9 +175,10 @@ GET https://<your-service>.up.railway.app/health
 | `AI_API_KEY` | *(اتركه فارغا)* | يُتجاهل في الوضع المجاني |
 | `AI_BASE_URL` | `https://api.openai.com/v1` | يُتجاهل في الوضع المجاني |
 | `SECRET_KEY` | `‏<سلسلة عشوائية 64>` | سري |
+| `ENV` | `prod` | |
+| `LOG_LEVEL` | `INFO` | |
 | `VERIFY_EXEC` | `0` | بلا Docker |
 | `SANDBOX_LOCAL` | `0` | بلا تنفيذ محلي |
-| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | ⚠️ **في كل خدمة** (بوت + API) |
 | `DB_POOL_SIZE` | `5` | اتصالات دائمة لكل خدمة |
 | `DB_MAX_OVERFLOW` | `5` | اتصال إضافي عند الذروة |
 | `LOG_LEVEL` | `INFO` | |

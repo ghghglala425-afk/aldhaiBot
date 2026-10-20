@@ -165,6 +165,24 @@ async def post_init(app: Application) -> None:
     else:
         log.info("وضع AI: %s", settings.ai_mode)
 
+    if not settings.admin_ids:
+        log.warning(
+            "⚠️ ADMIN_IDS غير مضبوط — أوامر المشرف (/build, /stats, /broadcast) "
+            "لن تعمل لأي مستخدم. اضبطه في Railway Variables."
+        )
+
+    # ---------- تهيئة قاعدة البيانات (داخل حلقة التطبيق) ----------
+    # يجب أن تكون هنا: لو تمّت بـ asyncio.run لَتم-bind المحرّك لحلقة
+    # أخرى، وكل كتابة تفشل بـ «attached to a different loop».
+    try:
+        await init_db()
+        _db_state["ok"] = True
+        _db_state["error"] = None
+    except Exception as e:  # noqa: BLE001
+        _db_state["ok"] = False
+        _db_state["error"] = str(e)[:300]
+        log.error("تعذّر تهيئة قاعدة البيانات: %s", e)
+
     # زرع البيانات الأساسية إن كانت القاعدة فارغة (قاعدة Railway الجديدة)
     try:
         from pipeline.seed import ensure_seeded
@@ -173,6 +191,24 @@ async def post_init(app: Application) -> None:
             log.info("تمت زرع البيانات الأساسية.")
     except Exception as e:  # noqa: BLE001
         log.warning("تعذّر زرع البيانات الأساسية: %s", e)
+
+    # تحذير: الكتابة في SQLite داخل الحاوية = ضياع البيانات عند كل نشر
+    try:
+        from core.db import fallback_reason, using_sqlite
+
+        if using_sqlite():
+            reason = fallback_reason()
+            log.critical(
+                "⚠️ قاعدة البيانات مؤقتة (SQLite داخل الحاوية) — البيانات تضيع "
+                "عند كل إعادة نشر! السبب: %s",
+                reason or "غير معروف",
+            )
+            await _notify_admins_db_fallback(reason)
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر فحص نوع قاعدة البيانات: %s", e)
+
+    _db_state["ready"] = True
+    log.info("✅ الخدمة جاهزة.")
 
     setup_jobs(app)
     from pipeline import jobs
@@ -202,6 +238,11 @@ async def post_shutdown(app: Application) -> None:
     from pipeline import jobs
 
     await jobs.stop_worker()
+    # إغلاق المحرّك داخل حلقة التطبيق نفسها
+    try:
+        await close_db()
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر إغلاق قاعدة البيانات: %s", e)
 
 
 class _ConflictAwareUpdater(Updater):
@@ -311,6 +352,39 @@ def _detect_platform() -> None:
 
 _health_started = False
 
+# حالة مشتركة بين خيط الفحص الصحي وحلقة التطبيق.
+# خيط الفحص الصحي لا يملك حلقة أحداث، فلا يمكنه استعمال محرّك SQLAlchemy.
+_db_state: dict[str, object] = {"ok": False, "error": None, "ready": False}
+
+
+def _probe_tcp(host: str, port: int, timeout: float = 3.0) -> bool:
+    """يفحص إن كان المضيف:المنفذ يستجيب — بلا SQLAlchemy وبلا حلقة أحداث."""
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _db_host_port() -> tuple[str, int]:
+    """يستخرج المضيف والمنفذ من رابط قاعدة البيانات."""
+    from core.db import _DATABASE_URL
+
+    if _DATABASE_URL.startswith("sqlite"):
+        return "", 0
+    try:
+        rest = _DATABASE_URL.split("://", 1)[1]
+        rest = rest.split("@", 1)[-1]
+        host_port = rest.split("/", 1)[0]
+        if ":" in host_port:
+            host, port = host_port.rsplit(":", 1)
+            return host, int(port)
+        return host_port, 5432
+    except Exception:  # noqa: BLE001
+        return "", 0
+
 
 def _start_health_server(port: int) -> None:
     """خادم صحي صغير في خيط منفصل — يخدم /health على Railway.
@@ -343,9 +417,10 @@ def _start_health_server(port: int) -> None:
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path in ("/health", "/healthz"):
                 # 200 حتى أثناء التهيئة — Railway يطلب خدمة سليمة لا خدمة مكتملة
+                ready = bool(_db_state["ready"])
                 body = (
                     '{"status":"ok","service":"%s","ready":%s}'
-                    % (state["role"], "true" if state["ready"] else "false")
+                    % (state["role"], "true" if ready else "false")
                 ).encode()
                 self._reply(200, body)
             elif path == "/diag":
@@ -354,7 +429,7 @@ def _start_health_server(port: int) -> None:
 
                 payload: dict[str, object] = {
                     "status": "ok",
-                    "ready": state["ready"],
+                    "ready": bool(_db_state["ready"]),
                     "mode": settings.BOT_MODE,
                     "database": _diag_database(),
                     "ai": {
@@ -367,6 +442,7 @@ def _start_health_server(port: int) -> None:
                     "token_error": _token_state["error"],
                     "bot_username": _token_state["username"],
                     "admins": settings.admin_ids,
+                    "admins_configured": bool(settings.admin_ids),
                     "errors": settings.check_required(),
                     "warnings": settings.check_warnings(),
                 }
@@ -390,14 +466,14 @@ def _start_health_server(port: int) -> None:
 
 
 def _diag_database() -> dict:
-    """تشخيص سريع لقاعدة البيانات — يظهر في /diag."""
-    from core.db import (
-        _DATABASE_URL,
-        SessionLocal,
-        fallback_reason,
-        is_misconfigured,
-        using_sqlite,
-    )
+    """تشخيص قاعدة البيانات — يظهر في /diag.
+
+    لا نستعمل محرّك SQLAlchemy هنا: خيط الفحص الصحي بلا حلقة أحداث،
+    والمحرّك مربوط بحلقة التطبيق — فأي استعمال له من هنا يفشل بـ
+    «attached to a different loop». نفحص المضيف:المنفذ عبر TCP فقط،
+    ونقرأ نتيجة آخر تهيئة ناجحة من الحالة المشتركة.
+    """
+    from core.db import fallback_reason, is_misconfigured, using_sqlite
 
     info: dict[str, object] = {
         "kind": "sqlite" if using_sqlite() else "postgresql",
@@ -407,18 +483,21 @@ def _diag_database() -> dict:
         "misconfigured": is_misconfigured(),
         # البيانات في SQLite داخل الحاوية تضيع عند كل إعادة نشر
         "persistent": not using_sqlite(),
+        "last_init_ok": bool(_db_state["ok"]),
+        "last_init_error": _db_state["error"],
     }
-    try:
-        from sqlalchemy import text
 
-        async def _ping() -> None:
-            async with SessionLocal() as s:
-                await s.execute(text("SELECT 1"))
+    host, port = _db_host_port()
+    if host and port:
+        info["host"] = host
+        info["port"] = port
+        info["connected"] = _probe_tcp(host, port)
+    else:
+        # SQLite: نعتبره متصلا إن كانت آخر تهيئة ناجحة
+        info["connected"] = bool(_db_state["ok"])
+        if not _db_state["ok"]:
+            info["error"] = _db_state["error"] or "لم تتم تهيئة القاعدة بعد"
 
-        asyncio.run(_ping())
-        info["connected"] = True
-    except Exception as e:  # noqa: BLE001
-        info["error"] = str(e)[:200]
     return info
 
 
@@ -533,13 +612,9 @@ def _run() -> None:
         _idle_loop()
         return
 
-    try:
-        asyncio.run(init_db())
-    except Exception as e:  # noqa: BLE001
-        log.error("تعذّر تهيئة قاعدة البيانات: %s", e)
-        if health_state is None:
-            raise
-        # نكمل التشغيل: خادم الفحص الصحي يعمل والبوت يمكنه العمل
+    # تهيئة قاعدة البيانات تتم في post_init — داخل حلقة التطبيق نفسها.
+    # لو تمّ هنا بـ asyncio.run لَتم-bind المحرّك لحلقة أخرى، وكل
+    # كتابة تفشل بـ «attached to a different loop».
 
     # تحذير مهم: الكتابة في SQLite داخل الحاوية = ضياع البيانات عند كل نشر
     try:
@@ -552,7 +627,6 @@ def _run() -> None:
                 "عند كل إعادة نشر! السبب: %s",
                 reason or "غير معروف",
             )
-            asyncio.run(_notify_admins_db_fallback(reason))
     except Exception as e:  # noqa: BLE001
         log.debug("تعذّر فحص نوع قاعدة البيانات: %s", e)
 
@@ -576,7 +650,8 @@ def _run() -> None:
                 allowed_updates=Update.ALL_TYPES, drop_pending_updates=True
             )
     finally:
-        asyncio.run(close_db())
+        # إغلاق القاعدة يتم في post_shutdown (داخل حلقة التطبيق)
+        pass
 
 
 def _idle_loop(reason: str = "") -> None:
