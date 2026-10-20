@@ -156,6 +156,51 @@ class TestPortHandling:
                     assert "--port 8000" not in line, f"{name}: {line.strip()}"
 
 
+class TestTokenValidation:
+    """توكن غير صالح = كل النداءات تفشل وتغمر سجلات Railway."""
+
+    def test_token_is_validated_before_polling(self) -> None:
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        assert "_validate_token" in src
+        run_body = src.split("def _run()")[1]
+        assert "_validate_token()" in run_body
+
+    def test_invalid_token_does_not_start_polling(self) -> None:
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        run_body = src.split("def _run()")[1].split("def _idle_loop")[0]
+        # التحقق يسبق run_polling
+        assert run_body.index("_validate_token()") < run_body.index("run_polling")
+
+    def test_health_server_starts_before_token_check(self) -> None:
+        """الخادم الصحي أولا وإلا فشل فحص Railway عند رفض التوكن."""
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        run_body = src.split("def _run()")[1].split("def _idle_loop")[0]
+        assert run_body.index("_start_health_server") < run_body.index("_validate_token()")
+
+    def test_diag_reports_token_validity(self) -> None:
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        assert '"token_valid"' in src
+        assert '"token_error"' in src
+
+
+class TestLogThrottling:
+    """Railway يحذف الرسائل بعد 500/ثانية."""
+
+    def test_throttle_filter_exists(self) -> None:
+        src = (ROOT / "core" / "logging.py").read_text(encoding="utf-8")
+        assert "_ThrottleFilter" in src
+
+    def test_throttle_filter_is_applied(self) -> None:
+        src = (ROOT / "core" / "logging.py").read_text(encoding="utf-8")
+        assert src.count("addFilter(_ThrottleFilter())") >= 1
+
+    def test_railway_mode_is_polling(self) -> None:
+        """Webhook لا يعمل خلف proxy Railway."""
+        src = (ROOT / "app" / "bot.py").read_text(encoding="utf-8")
+        assert "RAILWAY_ENVIRONMENT" in src
+        assert 'settings.BOT_MODE = "polling"' in src
+
+
 class TestDiagnosticEndpoint:
     """/diag يجعل النشر الفاشل قابلا للتشخيص عبر المتصفح."""
 

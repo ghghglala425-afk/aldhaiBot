@@ -4,12 +4,46 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from core.config import settings
 
 _FORMAT = "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s"
+
+# حد Railway: 500 رسالة/ثانية. نخنق الرسائل المتكررة لنفس النص.
+_MAX_REPEATS = 3
+_REPEAT_WINDOW = 60.0  # ثانية
+
+
+class _ThrottleFilter(logging.Filter):
+    """يمنع تكرار نفس الرسالة أكثر من _MAX_REPEATS في نافذة زمنية."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen: dict[tuple[str, str], list[float]] = {}
+        self._lock = threading.Lock()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            key = (record.name, record.getMessage()[:200])
+        except Exception:  # noqa: BLE001
+            return True
+        now = time.monotonic()
+        with self._lock:
+            times = self._seen.setdefault(key, [])
+            times[:] = [t for t in times if now - t < _REPEAT_WINDOW]
+            if len(times) >= _MAX_REPEATS:
+                return False
+            times.append(now)
+            # تنظيف دوري للمفاتيح القديمة
+            if len(self._seen) > 500:
+                for k in list(self._seen):
+                    if not [t for t in self._seen[k] if now - t < _REPEAT_WINDOW]:
+                        self._seen.pop(k, None)
+        return True
 
 
 def setup_logging() -> None:
@@ -29,6 +63,7 @@ def setup_logging() -> None:
 
     stream = logging.StreamHandler(sys.stdout)
     stream.setFormatter(formatter)
+    stream.addFilter(_ThrottleFilter())
     root.addHandler(stream)
 
     # سجل دوّار للتشغيل المستمر (24/7): 5 ملفات × 5MB
@@ -43,12 +78,15 @@ def setup_logging() -> None:
                 encoding="utf-8",
             )
             file_handler.setFormatter(formatter)
+            file_handler.addFilter(_ThrottleFilter())
             root.addHandler(file_handler)
         except OSError:
             pass
 
     root.setLevel(level)
-    for noisy in ("httpx", "httpcore", "telegram.ext.Updater"):
+    # المصادر الصاخبة: نخنقها أكثر
+    for noisy in ("httpx", "httpcore", "telegram.ext.Updater", "telegram.ext.Application",
+                  "apscheduler", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

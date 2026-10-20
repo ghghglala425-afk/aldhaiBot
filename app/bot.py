@@ -297,6 +297,17 @@ def _detect_platform() -> None:
         settings.MINIAPP_URL = settings.MINIAPP_URL or f"https://{domain}"
         log.info("اكتُشف نطاق Railway: %s", domain)
 
+    # على Railway نستخدم Polling دائما:
+    # الـ proxy ينهي TLS ويعيد التوجيه إلى HTTP، بينما خادم webhook في
+    # PTB يستمع بـ TLS على نفس المنفذ — فلا يصله شيء.
+    on_railway = bool(domain) or bool(os.environ.get("RAILWAY_ENVIRONMENT", "").strip())
+    if on_railway and settings.BOT_MODE == "webhook":
+        log.warning(
+            "وضع Webhook غير مدعوم خلف Railway (الـ proxy ينهي TLS ويتوقع HTTP) "
+            "-- تم التحويل إلى Polling."
+        )
+        settings.BOT_MODE = "polling"
+
 
 def _start_health_server(port: int) -> None:
     """خادم صحي صغير في خيط منفصل — يخدم /health على Railway.
@@ -349,6 +360,9 @@ def _start_health_server(port: int) -> None:
                         "model": settings.GEMINI_MODEL,
                     },
                     "bot_token": bool(settings.BOT_TOKEN),
+                    "token_valid": _token_state["valid"] or None,
+                    "token_error": _token_state["error"],
+                    "bot_username": _token_state["username"],
                     "admins": settings.admin_ids,
                     "errors": settings.check_required(),
                     "warnings": settings.check_warnings(),
@@ -407,6 +421,40 @@ def _startup_banner() -> None:
     log.info("=" * 52)
 
 
+_token_state = {"checked": False, "valid": False, "error": None, "username": None}
+
+
+async def _validate_token() -> bool:
+    """يتحقق من صحة التوكن قبل بدء Polling.
+
+    توكن غير صالح = كل نداءات تيليجرام تفشل وتغمر السجلات
+    (Railway يحذف بعد 500 رسالة/ثانية). نتحقق مرة واحدة ونخرج بوضوح.
+    """
+    from telegram.error import InvalidToken
+
+    try:
+        from telegram import Bot
+
+        bot = Bot(settings.BOT_TOKEN)
+        me = await bot.get_me()
+        log.info("التوكن صالح — البوت: @%s (id=%s)", me.username, me.id)
+        _token_state.update(
+            checked=True, valid=True, error=None, username=me.username
+        )
+        return True
+    except InvalidToken as e:
+        _token_state.update(checked=True, valid=False, error=str(e)[:200])
+        log.error(
+            "❌ التوكن مرفوض من تيليجرام (InvalidToken).\n"
+            "   تأكد أن BOT_TOKEN هو توكن البوت الصحيح ومنسوخ كاملا،\n"
+            "   وأنه لم يُلغَ (revoke) ولم يُحذف البوت من @BotFather."
+        )
+        return False
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر التحقق من التوكن (%s) — سنحاول المتابعة.", e)
+        return True
+
+
 def _run() -> None:
     errors = settings.check_required()
     fatal = False
@@ -424,8 +472,9 @@ def _run() -> None:
     _detect_platform()
     _startup_banner()
 
-    # خادم الفحص الصحي **قبل** أي عمل على قاعدة البيانات:
-    # اتصال Postgres قد يتأخر (إعادة محاولة) فيفشل فحص صحة Railway.
+    # خادم الفحص الصحي **أول شيء** — قبل أي عمل على قاعدة البيانات أو تيليجرام:
+    # (1) فحص صحة Railway لا يتأخر بسبب انتظار Postgres،
+    # (2) يبقى /diag متاحا لتشخيص أي فشل.
     health_state = None
     if os.environ.get("PORT", "").strip().isdigit():
         health_state = _start_health_server(settings.WEBHOOK_PORT)
@@ -433,6 +482,12 @@ def _run() -> None:
     if fatal:
         # لا نخرج حتى يبقى النشر قابلا للتشخيص عبر /diag
         log.error("توقّف الإقلاع — البوت لا يعمل بدون BOT_TOKEN صالح.")
+        _idle_loop()
+        return
+
+    # التحقق من التوكن قبل Polling: توكن خاطئ = فشل متكرر + إغراق للسجلات
+    if not asyncio.run(_validate_token()):
+        log.error("توقّف الإقلاع — التوكن غير صالح.")
         _idle_loop()
         return
 

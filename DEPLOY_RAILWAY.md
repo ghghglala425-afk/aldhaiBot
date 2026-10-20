@@ -79,6 +79,32 @@
 > راقب Logs لترى: `مضيف قاعدة البيانات ... التحويل إلى SQLite`.
 > لكن Postgres أفضل للبيانات المشتركة بين البوت والـ API.
 
+### 🔍 التشخيص السريع (بدون قراءة السجلات)
+
+بعد النشر افتح في المتصفح:
+
+```
+https://<نطاق-خدمتك>.up.railway.app/diag
+```
+
+يعيد JSON فيه كل ما يهم:
+
+```json
+{
+  "token_valid": true,
+  "bot_username": "TrsttryBot",
+  "database": {"kind": "postgresql", "connected": true, "error": null},
+  "ai": {"configured": true, "providers": ["gemini"], "model": "gemini-3.5-flash-lite"},
+  "errors": [], "warnings": []
+}
+```
+
+| الحقل | معناه |
+|---|---|
+| `token_valid` | `false` يعني أن التوكن مرفوض من تيليجرام (أعد issuance من @BotFather) |
+| `database.connected` | `false` يعني أن Postgres غير موصول |
+| `errors` / `warnings` | مشاكل الإعدادات بالتفصيل |
+
 ### 🔍 للتأكد من القاعدة المستعملة فعليا
 ```
 GET https://<your-service>.up.railway.app/health
@@ -95,6 +121,11 @@ GET https://<your-service>.up.railway.app/health
 ---
 
 ## الخطوة 3 — متغيرات خدمة البوت (دقيقة)
+
+> ⚠️ **BOT_MODE على Railway = polling (ليس webhook).**
+> الـ proxy في Railway ينهي TLS ويعيد التوجيه إلى HTTP، بينما خادم webhook في
+> python-telegram-bot يستمع بـ TLS — فلا يصله شيء. الكود يحوّل الوضع تلقائيا
+> على Railway، لكن اجعل المتغير polling صراحة.
 
 **خدمة الـ bot** (التي أنشأتها في الخطوة 1) → تبويب **Variables**:
 
@@ -235,10 +266,12 @@ railway up
 
 | المشكلة | الحل |
 |---|---|
-| `socket.gaierror: Name or service not known` | `DATABASE_URL` يشير لمضيف غير موجود — انظر قسم «🛟» أعلاه (الكود الآن يتحول لـ SQLite بدل الانهيار) |
+| `InvalidToken: The token ... was rejected` | التوكن غير صالح أو ملغى — خذ توكنا جديدا من @BotFather (أو احذف البوت القديم). `/diag` يوضح `token_valid: false` |
+| `Railway rate limit of 500 logs/sec` | إغراق سجلات — غالبا توكن خاطئ يدور في حلقة. الكود يتحقق من التوكن مرة واحدة ويتوقف + يخنق الرسائل المتكررة |
+| `socket.gaierror: Name or service not known` | `DATABASE_URL` يشير لمضيف غير موجود — انظر قسم «🛟» أدناه |
 | `The asyncio extension requires an async driver` | ✅ مُصلَح — `core/config.py` يضيف `+asyncpg` تلقائيا |
-| `Conflict: terminated by other getUpdates` | تأكد `Num Replicas = 1`، وأوقف أي نسخة محلية |
-| `Application failed to start` | راجع Logs — غالبا `BOT_TOKEN` أو `GEMINI_API_KEY` ناقص |
+| `Conflict: terminated by other getUpdates` | نسخة أخرى تعمل بنفس التوكن — أوقفها (نسخة محلية أو خدمة Railway ثانية) |
+| `Application failed to start` | راجع `/diag` في المتصفح — يحدد المتغير الناقص بالضبط |
 | `429 Too Many Requests` | نفدت حصة Gemini — انتظر الغد أو أضف مفتاح Groq |
 | `AI غير مضبوط` | `AI_FREE_MODE=1` + `GEMINI_API_KEY` في Variables |
 | البوت لا يستجيب بعد Deploy | Railway يعيد التشغيل — انتظر 30 ثانية، وتأكد من Logs |
