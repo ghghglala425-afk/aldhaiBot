@@ -118,8 +118,9 @@ def _payload(
     return payload
 
 
-async def _post(payload: dict) -> str:
-    async with httpx.AsyncClient(timeout=settings.AI_TIMEOUT) as client:
+async def _post(payload: dict, *, timeout: float | None = None) -> str:
+    limit = float(timeout or settings.AI_TIMEOUT)
+    async with httpx.AsyncClient(timeout=limit) as client:
         resp = await client.post(_endpoint(), headers=_headers(), json=payload)
     if resp.status_code >= 400:
         raise AIHTTPError(resp.status_code, resp.text)
@@ -138,6 +139,7 @@ async def _generate(
     model: str,
     max_tokens: int | None,
     mode: str,
+    timeout: float | None = None,
 ) -> str:
     """ينفّذ نداء واحدا: طبقة المزوّدين المجانيين أو نقطة نهاية مباشرة."""
     if settings.ai_mode == "free":
@@ -149,13 +151,14 @@ async def _generate(
             temperature=temperature,
             max_tokens=max_tokens,
             mode="none" if mode == "none" else "json_object",
+            timeout=timeout,
         )
         return text
     payload = _payload(
         system, user, temperature=temperature, model=model,
         max_tokens=max_tokens, mode=mode,
     )
-    return await _post(payload)
+    return await _post(payload, timeout=timeout)
 
 
 async def chat_json(
@@ -166,13 +169,16 @@ async def chat_json(
     max_retries: int | None = None,
     model: str | None = None,
     max_tokens: int | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """يطلب مخرَجا JSON ويُرجع قاموسا — مع تراجع الأوضاع وإعادة المحاولة."""
     if not settings.ai_configured:
         raise AIError("لا يوجد مزوّد AI مضبوط — لا يمكن توليد المحتوى.")
 
     retries = max_retries or settings.AI_MAX_RETRIES
-    modes = settings.ai_json_modes
+    # في الوضع المجاني كل الأوضاع تُترجم إلى json_object، لذا تكرارها يضاعف
+    # زمن الفشل بلا فائدة. نجرّب وضعا واحدا ونعتمد على إعادة المحاولة.
+    modes = ["json_object"] if settings.ai_mode == "free" else settings.ai_json_modes
     model = model or settings.AI_MODEL
     max_tokens = max_tokens if max_tokens is not None else settings.AI_MAX_TOKENS
 
@@ -182,7 +188,7 @@ async def chat_json(
             try:
                 content = await _generate(
                     system, user, temperature=temperature, model=model,
-                    max_tokens=max_tokens, mode=mode,
+                    max_tokens=max_tokens, mode=mode, timeout=timeout,
                 )
                 data = extract_json(content)
                 if not isinstance(data, dict):
@@ -219,6 +225,7 @@ async def chat_text(
     model: str | None = None,
     max_tokens: int | None = None,
     max_retries: int = 2,
+    timeout: float | None = None,
 ) -> str:
     """نص حر (المساعد الذكي/الشروح)."""
     if not settings.ai_configured:
@@ -233,7 +240,7 @@ async def chat_text(
             return (
                 await _generate(
                     system, user, temperature=temperature, model=model,
-                    max_tokens=max_tokens, mode="none",
+                    max_tokens=max_tokens, mode="none", timeout=timeout,
                 )
             ).strip()
         except Exception as e:  # noqa: BLE001

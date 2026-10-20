@@ -2,6 +2,8 @@
 """مساعدات مشتركة لمعالجات البوت."""
 from __future__ import annotations
 
+import asyncio
+
 from telegram import Message, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
@@ -35,10 +37,50 @@ async def require_user(update: Update, context: ContextTypes.DEFAULT_TYPE, *, si
 
 
 def chunk_text(text: str, limit: int = 3500) -> list[str]:
+    """يقسّم النص عند حدود الأسطر بدل قطع الكلمات في المنتصف."""
     text = text or ""
     if len(text) <= limit:
         return [text]
-    return [text[i : i + limit] for i in range(0, len(text), limit)]
+    parts: list[str] = []
+    buf = ""
+    for line in text.splitlines(keepends=True):
+        if len(buf) + len(line) > limit:
+            if buf:
+                parts.append(buf)
+                buf = ""
+            while len(line) > limit:
+                parts.append(line[:limit])
+                line = line[limit:]
+        buf += line
+    if buf:
+        parts.append(buf)
+    return parts
+
+
+def ai_error_text(err: Exception | str | None) -> str:
+    """رسالة عربية واضحة لمشاكل مزوّد الذكاء الاصطناعي (بدل صمت أو خطأ غامض)."""
+    text = str(err or "")
+    low = text.lower()
+    if "مفتاح غير صالح" in text or "401" in text or "unauthenticated" in low or "api key not valid" in low:
+        return (
+            "مفتاح الذكاء الاصطناعي غير صالح أو منتهٍ.\n"
+            "حدّث GEMINI_API_KEY (أو أضف GROQ_API_KEY) في إعدادات الخادم ثم أعد المحاولة."
+        )
+    if "نفدت" in text or "429" in text or "quota" in low or "exhausted" in low:
+        return (
+            "نفدت حصة الذكاء الاصطناعي المتاحة.\n"
+            "ارفع AI_DAILY_TOKEN_BUDGET أو أضف مزوّدا/مفتاحا احتياطيا، ثم أعد المحاولة."
+        )
+    if "فشل كل المزوّدين" in text:
+        return "خدمة الذكاء الاصطناعي غير متاحة الآن (تحقّق من المفاتيح والحصة في الخادم)."
+    if "timeout" in low or "مهلة" in text or "timed out" in low:
+        return "انتهت مهلة انتظار مزوّد الذكاء الاصطناعي. أعد المحاولة بعد لحظات."
+    if "no such table" in low or "operationalerror" in low:
+        return (
+            "قاعدة البيانات غير مهيأة بعد.\n"
+            "شغّل تهيئة القاعدة (python -m scripts.init_db) أو أعد نشر التطبيق."
+        )
+    return f"تعذّر الاتصال بالذكاء الاصطناعي: {text[:180]}"
 
 
 async def reply_long(message: Message, text: str, *, parse_mode: str | None = None) -> None:
@@ -53,6 +95,29 @@ async def send_long(bot, chat_id: int, text: str, *, parse_mode: str | None = No
 
 def esc_pre(text: str | None) -> str:
     return f"<pre>{esc(text)}</pre>"
+
+
+async def animate_status(
+    message: Message, stop: asyncio.Event, base: str, *, every: int = 8, note: str = ""
+) -> None:
+    """يحدّث رسالة الانتظار دوريا ليعرف المستخدم أن العمل جارٍ (لا صمت)."""
+    elapsed = 0
+    suffix = note or "نجهّز المحتوى…"
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+            return
+        except asyncio.TimeoutError:
+            pass
+        elapsed += every
+        try:
+            await message.edit_text(
+                f"{base}\n\n<i>مضى {elapsed} ثانية… {suffix}</i>",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
 
 HTML = ParseMode.HTML

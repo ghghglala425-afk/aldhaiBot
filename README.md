@@ -136,8 +136,13 @@ GEMINI_API_KEY=<من https://aistudio.google.com/apikey>
 GEMINI_API_KEY_2=
 GROQ_API_KEY=<اختياري من https://console.groq.com/keys>
 OPENROUTER_API_KEY=<اختياري من https://openrouter.ai/keys>
-AI_DAILY_TOKEN_BUDGET=250000
+AI_DAILY_TOKEN_BUDGET=2000000
+GEMINI_MODEL=gemini-2.5-flash-lite
+GEMINI_FALLBACK_MODEL=gemini-2.5-flash-lite
 ```
+
+> `GEMINI_FALLBACK_MODEL` يُجرَّب تلقائيا إذا رفض المزوّد اسم الموديل الأساسي.
+> زد `AI_DAILY_TOKEN_BUDGET` إذا أردت توليد كل الدروس (200 درس) في يوم واحد.
 
 - كل مزوّد له حدود (RPM/RPD/TPD) مضبوطة في `.env`؛ عند بلوغها يُستبعد مؤقتا ويُنتقل للتالي.
 - الاستهلاك اليومي يُسجَّل في جدول `ai_usage` ويُصفَّر تلقائيا كل يوم.
@@ -255,8 +260,9 @@ py -3.12 -m venv .venv
 ثم في `.env`:
 ```
 DATABASE_URL=sqlite+aiosqlite:///./data/app.db
-VERIFY_EXEC=0          # بلا تنفيذ أكواد (تحقق نحوي فقط) — الأسلم
-SANDBOX_LOCAL=0        # يمنع التنفيذ المحلي غير المعزول حتى لو كان VERIFY_EXEC=1
+VERIFY_EXEC=0          # بلا تنفيذ عند توليد الدروس (تحقق نحوي فقط) — أسرع وأسلم
+SANDBOX_LOCAL=1        # يفعّل /run محليا عند غياب Docker: بيئة نظيفة + حدود موارد + مهلة
+                       # تحذير: بلا عزل شبكي؛ أوقفه (0) إن كان الخادم حساسا، أو استخدم Docker.
 TARGET_EXTERNAL_URLS=  # اتركه فارغا للنمط الموجّه، أو juice-shop=https://<host> لهدف خارجي
 ```
 وأخيرا:

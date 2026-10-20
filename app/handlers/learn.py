@@ -2,12 +2,15 @@
 """معالجات التعلّم: استعراض الكورسات والمراحل والدروس، وعرض الأكواد، وإجراء الاختبار."""
 from __future__ import annotations
 
+import asyncio
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
 from sqlalchemy import select
 
 from app import lesson_view as lv
+from app.handlers.common import ai_error_text, animate_status
 from app.keyboards import courses_kb
 from app.pagination import clamp_page, nav_row, slice_page, total_pages
 from core.db import SessionLocal
@@ -143,7 +146,7 @@ async def _send_html_chunks(message, text: str, limit: int = 3800) -> None:
 
 
 async def _send_code_blocks(message, codes: list[CodeSample]) -> None:
-    """يعرض الأكواد بترويسة ملوّنة لكل كتلة."""
+    """يعرض الأكواد بترويسة ملوّنة لكل كتلة، مع زر تشغيل مباشر."""
     total = len(codes)
     for i, c in enumerate(codes, start=1):
         block = lv.render_code_block(c.code, c.language or "", i, total, c.title)
@@ -160,6 +163,53 @@ async def _send_code_blocks(message, codes: list[CodeSample]) -> None:
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
+        await message.reply_text(
+            f"▶️ <b>{lv.esc(c.title)}</b> — جرّبه بنفسك:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("▶️ شغّل هذا الكود", callback_data=f"runc:{c.id}")]]
+            ),
+        )
+
+
+async def run_code_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يشغّل كود الدرس مباشرة في الـSandbox ويعرض النتيجة."""
+    from pipeline.sandbox_runner import run_code
+    from app import ratelimit
+
+    q = update.callback_query
+    if not await ratelimit.guard(update, "run"):
+        return
+    await q.answer("أشغّل الكود…")
+    code_id = int(q.data.split(":")[1])
+    async with SessionLocal() as s:
+        c = await s.get(CodeSample, code_id)
+    if not c:
+        await tg.send_text(update.effective_message, "الكود غير موجود.")
+        return
+    msg = await update.effective_message.reply_text("⏳ أُشغّل الكود في بيئة معزولة…")
+    try:
+        res = await run_code(c.language, c.code, exec_enabled=True)
+    except Exception as e:  # noqa: BLE001
+        log.exception("تعذّر تشغيل كود الدرس #%s", code_id)
+        await msg.edit_text(f"❌ تعذّر التشغيل: {str(e)[:180]}")
+        return
+    icon = {"ok": "✅", "error": "❌", "timeout": "⏰", "skipped": "⚠️"}.get(res.status, "•")
+    body = f"{icon} <b>نتيجة التشغيل</b> — <code>{lv.esc(c.language)}</code>\n"
+    if res.engine:
+        body += f"المحرّك: <code>{lv.esc(res.engine)}</code>\n"
+    if res.detail:
+        body += f"ملاحظة: {lv.esc(res.detail)}\n"
+    if res.stdout:
+        body += f"\n<b>الخرج:</b>\n<pre>{lv.esc(res.stdout[:2200])}</pre>"
+    if res.stderr:
+        body += f"\n<b>الأخطاء:</b>\n<pre>{lv.esc(res.stderr[:1200])}</pre>"
+    if res.status == "skipped":
+        body += "\n<i>فعّل SANDBOX_LOCAL=1 أو Docker لتنفيذ الأكواد على الخادم.</i>"
+    try:
+        await msg.edit_text(body[:3900], parse_mode=ParseMode.HTML)
+    except Exception:  # noqa: BLE001
+        await tg.send_text(update.effective_message, body[:3900], parse_mode=ParseMode.HTML)
 
 
 def _code_chunks(title: str, codes: list[CodeSample]) -> list[str]:
@@ -241,10 +291,13 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # ---------- التوليد الفوري عند الفتح (Lazy fill سريع) ----------
     if is_outline and settings.GEN_LAZY_ON_OPEN and settings.ai_configured:
         status_msg = None
+        base = (
+            "⚡ <b>نبني هذا الدرس الآن</b>\n"
+            "<i>شرح عميق، أمثلة عملية، وأسئلة — خلال لحظات.</i>"
+        )
         try:
             status_msg = await update.effective_message.reply_text(
-                "⚡ <b>نبني هذا الدرس الآن</b>\n"
-                "<i>شرح عميق، أمثلة عملية، وأسئلة — خلال لحظات.</i>",
+                base,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
@@ -253,7 +306,24 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         from pipeline import jobs
 
-        res = await jobs.generate_lesson_now(lesson_id, fast=True, timeout=150)
+        stop = asyncio.Event()
+        ticker = (
+            asyncio.create_task(
+                animate_status(status_msg, stop, base, note="نكتب شرحا معمّقا وأمثلة واختبارا.")
+            )
+            if status_msg
+            else None
+        )
+        res = await jobs.generate_lesson_now(lesson_id, fast=True, timeout=180)
+        stop.set()
+        if ticker is not None:
+            ticker.cancel()
+            try:
+                await ticker
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                pass
         if status_msg is not None:
             try:
                 await status_msg.delete()
@@ -266,6 +336,14 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await jobs.enqueue_lesson(s, lesson_id, priority=9)
             except Exception as e:  # noqa: BLE001
                 log.warning("تعذّر إدراج توليد احتياطي: %s", e)
+            problem = res.get("error") or "انتهت المهلة"
+            await tg.send_text(
+                update.effective_message,
+                "⚠️ <b>تعذّر تجهيز الدرس الآن</b>\n"
+                f"{ai_error_text(problem)}\n\n"
+                "<i>أُدرج الدرس في قائمة التوليد التلقائي — اضغط «🔄 تحديث» بعد قليل.</i>",
+                parse_mode=ParseMode.HTML,
+            )
 
     # إعادة تحميل الدرس والأكواد بعد التوليد
     async with SessionLocal() as s:
@@ -748,14 +826,23 @@ async def code_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )).scalars().all()
         )
     if not codes:
-        await tg.edit_text(q, "لا توجد أكواد لهذا الدرس.")
+        await tg.send_text(update.effective_message, "لا توجد أكواد لهذا الدرس.")
         return
     rows = [
         [InlineKeyboardButton(f"{i}. {c.title[:45]}", callback_data=f"code:{c.id}")]
         for i, c in enumerate(codes, start=1)
     ]
-    await tg.edit_text(q, 
-        f"📚 موسوعة الأكواد ({len(codes)}) — اختر كودا لعرض تشريحه وكل استخداماته:",
+    rows.append(
+        [
+            InlineKeyboardButton("🧠 اختبار الدرس", callback_data=f"qz_start:{lesson_id}"),
+            InlineKeyboardButton("⬅️ رجوع للدرس", callback_data=f"lesson:{lesson_id}"),
+        ]
+    )
+    # رسالة جديدة كي تبقى أزرار الدرس الأصلية (ومنها الاختبار) في مكانها.
+    await update.effective_message.reply_text(
+        f"📚 <b>موسوعة الأكواد ({len(codes)})</b>\n"
+        "<i>اختر كودا لعرض تشريحه وكل استخداماته.</i>",
+        parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(rows),
     )
 
@@ -774,6 +861,22 @@ async def code_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception:
         pass
     await _send_chunks(update.effective_message, _atlas_chunks(c))
+    lesson_id = c.lesson_id
+    await update.effective_message.reply_text(
+        "🔎 ماذا بعد؟",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("▶️ شغّل هذا الكود", callback_data=f"runc:{c.id}"),
+                    InlineKeyboardButton("📚 كل الأكواد", callback_data=f"codelist:{lesson_id}"),
+                ],
+                [
+                    InlineKeyboardButton("🧠 اختبار الدرس", callback_data=f"qz_start:{lesson_id}"),
+                    InlineKeyboardButton("⬅️ رجوع للدرس", callback_data=f"lesson:{lesson_id}"),
+                ],
+            ]
+        ),
+    )
 
 
 def register_handlers(app) -> None:
@@ -784,6 +887,7 @@ def register_handlers(app) -> None:
     app.add_handler(CallbackQueryHandler(generate_now, pattern=r"^gen:\d+$"))
     app.add_handler(CallbackQueryHandler(code_list, pattern=r"^codelist:\d+$"))
     app.add_handler(CallbackQueryHandler(code_detail, pattern=r"^code:\d+$"))
+    app.add_handler(CallbackQueryHandler(run_code_sample, pattern=r"^runc:\d+$"))
     app.add_handler(CallbackQueryHandler(quiz_start, pattern=r"^qz_start:\d+$"))
     app.add_handler(CallbackQueryHandler(quiz_option, pattern=r"^qopt:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(quiz_nav, pattern=r"^q(next|prev)$"))

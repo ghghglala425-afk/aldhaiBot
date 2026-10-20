@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
@@ -254,11 +254,12 @@ def _retry_after(resp: httpx.Response) -> float:
 
 async def _call_one(
     spec: ProviderSpec, system: str, user: str, *, temperature: float,
-    max_tokens: int | None, mode: str,
+    max_tokens: int | None, mode: str, timeout: float | None = None,
 ) -> tuple[str, int]:
     await spec.throttle()
-    timeout = httpx.Timeout(settings.AI_TIMEOUT, connect=15.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    read_timeout = float(timeout or settings.AI_TIMEOUT)
+    http_timeout = httpx.Timeout(read_timeout, connect=min(15.0, read_timeout))
+    async with httpx.AsyncClient(timeout=http_timeout) as client:
         if spec.native:
             url = f"{spec.base_url}/models/{spec.model}:generateContent?key={spec.api_key}"
             body = _gemini_payload(
@@ -292,6 +293,31 @@ async def _call_one(
     return _parse_gemini(data) if spec.native else _parse_openai(data)
 
 
+async def _call_with_fallback(
+    spec: ProviderSpec, system: str, user: str, *, temperature: float,
+    max_tokens: int | None, mode: str, timeout: float | None = None,
+) -> tuple[str, int]:
+    """ينادي المزوّد، ويجرّب موديل Gemini بديلا إذا كان اسم الموديل غير مدعوم."""
+    try:
+        return await _call_one(
+            spec, system, user, temperature=temperature,
+            max_tokens=max_tokens, mode=mode, timeout=timeout,
+        )
+    except ProviderError as e:
+        fallback = settings.GEMINI_FALLBACK_MODEL
+        low = str(e).lower()
+        unsupported = "404" in str(e) or "not found" in low or "not supported" in low
+        if spec.native and fallback and fallback != spec.model and unsupported:
+            log.warning("موديل %s غير متاح — تجربة %s", spec.model, fallback)
+            text, tokens = await _call_one(
+                replace(spec, model=fallback), system, user,
+                temperature=temperature, max_tokens=max_tokens, mode=mode, timeout=timeout,
+            )
+            spec.model = fallback
+            return text, tokens
+        raise
+
+
 async def complete(
     system: str,
     user: str,
@@ -299,6 +325,7 @@ async def complete(
     temperature: float = 0.4,
     max_tokens: int | None = None,
     mode: str = "json_object",
+    timeout: float | None = None,
 ) -> tuple[str, str]:
     """يجرّب المزوّدين بالترتيب. يُرجع (النص, اسم المزوّد)."""
     from core.db import SessionLocal
@@ -317,9 +344,9 @@ async def complete(
                 errors.append(f"{spec.name}: نفدت حصته اليومية")
                 continue
             try:
-                text, tokens = await _call_one(
+                text, tokens = await _call_with_fallback(
                     spec, system, user, temperature=temperature,
-                    max_tokens=max_tokens, mode=mode,
+                    max_tokens=max_tokens, mode=mode, timeout=timeout,
                 )
             except QuotaExhausted as e:
                 await _record(session, spec, 0, error=True)

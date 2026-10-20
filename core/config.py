@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # موديل أسرع/أرخص اختياري لتوليد المخططات (اتركه فارغا لاستخدام AI_MODEL)
     AI_MODEL_FAST: str = ""
     AI_TIMEOUT: int = 120
-    AI_MAX_TOKENS: int = 4096
+    AI_MAX_TOKENS: int = 8192
     # auto | json_object | json_schema | none  — «auto» يجرّب الأنسب ثم يتراجع تدريجيا
     AI_JSON_MODE: str = "auto"
     AI_MAX_RETRIES: int = 3
@@ -55,14 +55,16 @@ class Settings(BaseSettings):
     AI_PROVIDER_ORDER: str = "gemini,groq,openrouter"
     AI_FREE_MODE: bool = False
     # ميزانية يومية إجمالية بالتوكنات (0 = بلا سقف)
-    AI_DAILY_TOKEN_BUDGET: int = 250_000
+    AI_DAILY_TOKEN_BUDGET: int = 2_000_000
     # حدود الطبقة المجانية (عدّلها عند تغيّر سياسات المزوّد)
     GEMINI_API_KEY: str = ""
     GEMINI_API_KEY_2: str = ""
-    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    GEMINI_MODEL: str = "gemini-2.5-flash-lite"
+    # موديل بديل يُجرَّب تلقائيا إذا رفض المزوّد اسم الموديل (404)
+    GEMINI_FALLBACK_MODEL: str = "gemini-2.5-flash-lite"
     GEMINI_RPM: int = 10
-    GEMINI_RPD: int = 250
-    GEMINI_TPD: int = 250_000
+    GEMINI_RPD: int = 1_000
+    GEMINI_TPD: int = 2_000_000
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-120b"
     GROQ_RPM: int = 30
@@ -123,8 +125,9 @@ class Settings(BaseSettings):
     GEN_MAX_REPAIRS: int = 3
     GEN_CONCURRENCY: int = 2
     VERIFY_EXEC: bool = True
-    # تنفيذ الأكواد محليا عند غياب Docker (معطّل افتراضيا — بلا عزل). الأسلم: VERIFY_EXEC=0.
-    SANDBOX_LOCAL: bool = False
+    # تنفيذ الأكواد محليا عند غياب Docker: بيئة نظيفة + حدود موارد + مهلة.
+    # فعّله فقط إذا كنت تقبل تشغيل كود المستخدمين على الخادم (بلا عزل شبكي).
+    SANDBOX_LOCAL: bool = True
     VERIFY_CODE_CONCURRENCY: int = 4
     SANDBOX_MEM_MB: int = 256
     SANDBOX_CPUS: str = "0.5"

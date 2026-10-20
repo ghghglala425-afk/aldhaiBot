@@ -122,7 +122,7 @@ async def got_request(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     if not url:
         await tg.send_text(update.message, "صيغة غير صحيحة. مثال: GET https://example.com/")
         return ConversationHandler.END
-    msg = await tg.send_text(update.message, "⏳ أُرسل الطلب…")
+    msg = await update.message.reply_text("⏳ أُرسل الطلب…")
     async with SessionLocal() as s:
         user = await get_user_by_telegram(s, update.effective_user.id)
         try:

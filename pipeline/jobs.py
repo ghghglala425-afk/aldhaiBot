@@ -244,7 +244,7 @@ async def _plan_from_lesson(session, lesson: Lesson) -> LessonPlan:
     )
 
 
-async def _generate_lesson_job(session, job: GenerationJob) -> dict:
+async def _generate_lesson_job(session, job: GenerationJob, *, fast: bool = False) -> dict:
     lesson = await session.get(Lesson, job.lesson_id) if job.lesson_id else None
     if not lesson:
         return {"ok": False, "error": "الدرس غير موجود"}
@@ -252,7 +252,7 @@ async def _generate_lesson_job(session, job: GenerationJob) -> dict:
         return {"ok": True, "skipped": True}
     plan = await _plan_from_lesson(session, lesson)
     generated, report = await generate_lesson(
-        plan.topic, plan.language, plan.difficulty,
+        plan.topic, plan.language, plan.difficulty, fast=fast,
     )
     if not report.passed:
         return {"ok": False, "error": "; ".join(report.issues[:5]) or "فشل التحقق"}
@@ -365,7 +365,7 @@ async def generate_lesson_now(
 
         if run_job is not None:
             try:
-                res = await _generate_lesson_job(session, run_job)
+                res = await _generate_lesson_job(session, run_job, fast=fast)
             except Exception as e:  # noqa: BLE001
                 log.exception("فشل التوليد الفوري للدرس #%s: %s", lesson_id, e)
                 res = {"ok": False, "error": str(e)[:300]}
