@@ -137,11 +137,15 @@ GEMINI_API_KEY_2=
 GROQ_API_KEY=<اختياري من https://console.groq.com/keys>
 OPENROUTER_API_KEY=<اختياري من https://openrouter.ai/keys>
 AI_DAILY_TOKEN_BUDGET=2000000
-GEMINI_MODEL=gemini-2.5-flash-lite
-GEMINI_FALLBACK_MODEL=gemini-2.5-flash-lite
+GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_FALLBACK_MODEL=gemini-3.8-flash
+GEMINI_MODEL_CHAIN=gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash,gemini-3.1-flash-lite
+GEMINI_AUTODETECT=1
 ```
 
-> `GEMINI_FALLBACK_MODEL` يُجرَّب تلقائيا إذا رفض المزوّد اسم الموديل الأساسي.
+> أسماء موديلات Gemini تتقاعد بسرعة. عند رفض الاسم (HTTP 404 «no longer available»)
+> يجرّب البوت سلسلة `GEMINI_MODEL_CHAIN` ثم يكتشف الموديلات المتاحة فعليا من `/models`
+> (`GEMINI_AUTODETECT=1`) ويثبّت أول موديل ناجح. لا تعِد الموديل المتقاعد إلى `.env`.
 > زد `AI_DAILY_TOKEN_BUDGET` إذا أردت توليد كل الدروس (200 درس) في يوم واحد.
 
 - كل مزوّد له حدود (RPM/RPD/TPD) مضبوطة في `.env`؛ عند بلوغها يُستبعد مؤقتا ويُنتقل للتالي.

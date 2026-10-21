@@ -171,6 +171,9 @@ GET https://<your-service>.up.railway.app/health
 | `AI_FREE_MODE` | `1` | الوضع المجاني |
 | `AI_PROVIDER_ORDER` | `gemini,groq,openrouter` | ترتيب المزوّدين |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | ⚠️ `2.5-flash-lite` لم يعد متاحا |
+| `GEMINI_FALLBACK_MODEL` | `gemini-3.8-flash` | بديل عند رفض اسم الموديل |
+| `GEMINI_MODEL_CHAIN` | `gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash,gemini-3.1-flash-lite` | سلسلة تجريب تلقائي |
+| `GEMINI_AUTODETECT` | `1` | يكتشف الموديلات المتاحة من `/models` |
 | `AI_DAILY_TOKEN_BUDGET` | `250000` | سقف التوكنات اليومي |
 | `AI_API_KEY` | *(اتركه فارغا)* | يُتجاهل في الوضع المجاني |
 | `AI_BASE_URL` | `https://api.openai.com/v1` | يُتجاهل في الوضع المجاني |

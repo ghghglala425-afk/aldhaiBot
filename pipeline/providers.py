@@ -89,7 +89,7 @@ def build_providers(settings_override=None) -> list[ProviderSpec]:
                     ProviderSpec(
                         name="gemini",
                         base_url="https://generativelanguage.googleapis.com/v1beta",
-                        model=s.GEMINI_MODEL,
+                        model=_chosen_model.get(f"gemini:{key[-4:]}", s.GEMINI_MODEL),
                         api_key=key,
                         rpm=s.GEMINI_RPM,
                         rpd=s.GEMINI_RPD,
@@ -297,6 +297,108 @@ def _retry_after(resp: httpx.Response) -> float:
         return 60.0
 
 
+# ---------------------------------------------------------------------
+#  موديلات Gemini: كشف الأسماء المتقاعدة والتبديل التلقائي
+# ---------------------------------------------------------------------
+# آخر موديل ناجح لكل مفتاح — يبقى بعد انتهاء الطلب
+_chosen_model: dict[str, str] = {}
+# نتيجة اكتشاف /models لكل مفتاح (قائمة مرتبة، وقد تكون فارغة)
+_model_cache: dict[str, list[str]] = {}
+
+_MODEL_ERROR_HINTS = (
+    "404",
+    "no longer available",
+    "not found",
+    "not supported",
+    "not available",
+    "does not exist",
+    "invalid model",
+    "unknown model",
+)
+
+
+def _is_model_error(err: BaseException) -> bool:
+    low = str(err).lower()
+    return any(hint in low for hint in _MODEL_ERROR_HINTS)
+
+
+def _rank_models(names: list[str]) -> list[str]:
+    """يرتّب موديلات النص: flash-lite ثم flash ثم pro، والأحدث أولا."""
+    import re
+
+    skip = ("tts", "image", "live", "embedding", "aqa", "veo", "imagen", "deep-research")
+
+    def key(name: str) -> tuple[int, int, float]:
+        low = name.lower()
+        bad = 1 if any(s in low for s in skip) else 0
+        if "flash-lite" in low:
+            tier = 0
+        elif "flash" in low:
+            tier = 1
+        elif "pro" in low:
+            tier = 2
+        else:
+            tier = 3
+        match = re.search(r"gemini-(\d+(?:\.\d+)?)", low)
+        version = 0.0
+        if match:
+            try:
+                version = float(match.group(1))
+            except ValueError:
+                version = 0.0
+        return (bad, tier, -version)
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in sorted(names, key=key):
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _model_candidates(spec: ProviderSpec) -> list[str]:
+    """قائمة أسماء الموديلات المطلوبة: الأساسي ثم السلسلة ثم البديل."""
+    out: list[str] = []
+    for name in (spec.model, *settings.gemini_models, *_chosen_model.get(spec.key_id, "").split(",")):
+        name = (name or "").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+async def _discover_models(spec: ProviderSpec) -> list[str]:
+    """يجلب أسماء الموديلات المتاحة فعليا (مرة واحدة لكل مفتاح)."""
+    if not spec.native or not settings.GEMINI_AUTODETECT:
+        return []
+    if spec.key_id in _model_cache:
+        return _model_cache[spec.key_id]
+    url = f"{spec.base_url.rstrip('/')}/models?key={spec.api_key}"
+    names: list[str] = []
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(15.0, connect=8.0)
+        ) as client:
+            resp = await client.get(url)
+        if resp.status_code == 200:
+            for item in (resp.json() or {}).get("models") or []:
+                methods = item.get("supportedGenerationMethods") or []
+                if "generateContent" not in methods:
+                    continue
+                name = str(item.get("name") or "").rsplit("/", 1)[-1]
+                if name:
+                    names.append(name)
+        else:
+            log.warning("تعذّر اكتشاف موديلات Gemini (HTTP %s)", resp.status_code)
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر اكتشاف موديلات Gemini: %s", e)
+    ranked = _rank_models(names)
+    _model_cache[spec.key_id] = ranked
+    if ranked:
+        log.info("موديلات Gemini المتاحة: %s", ", ".join(ranked[:5]))
+    return ranked
+
+
 async def _call_one(
     spec: ProviderSpec, system: str, user: str, *, temperature: float,
     max_tokens: int | None, mode: str, timeout: float | None = None,
@@ -342,25 +444,45 @@ async def _call_with_fallback(
     spec: ProviderSpec, system: str, user: str, *, temperature: float,
     max_tokens: int | None, mode: str, timeout: float | None = None,
 ) -> tuple[str, int]:
-    """ينادي المزوّد، ويجرّب موديل Gemini بديلا إذا كان اسم الموديل غير مدعوم."""
-    try:
-        return await _call_one(
-            spec, system, user, temperature=temperature,
-            max_tokens=max_tokens, mode=mode, timeout=timeout,
-        )
-    except ProviderError as e:
-        fallback = settings.GEMINI_FALLBACK_MODEL
-        low = str(e).lower()
-        unsupported = "404" in str(e) or "not found" in low or "not supported" in low
-        if spec.native and fallback and fallback != spec.model and unsupported:
-            log.warning("موديل %s غير متاح — تجربة %s", spec.model, fallback)
+    """ينادي المزوّد، ويجرّب موديلات Gemini بديلة إذا رُفض اسم الموديل.
+
+    أسماء موديلات Gemini تتقاعد بسرعة (404 «no longer available»). لذلك:
+    - نجرّب سلسلة `GEMINI_MODEL_CHAIN` ثم الموديل البديل.
+    - عند أول رفض نكتشف الموديلات المتاحة فعليا من `/models` ونكمل بها.
+    - نثبّت أول موديل ناجح لبقية الطلبات (كاش في الذاكرة).
+    """
+    tried = _model_candidates(spec)
+    errors: list[str] = []
+    i = 0
+    while i < len(tried):
+        model = tried[i]
+        i += 1
+        target = spec if model == spec.model else replace(spec, model=model)
+        try:
             text, tokens = await _call_one(
-                replace(spec, model=fallback), system, user,
-                temperature=temperature, max_tokens=max_tokens, mode=mode, timeout=timeout,
+                target, system, user, temperature=temperature,
+                max_tokens=max_tokens, mode=mode, timeout=timeout,
             )
-            spec.model = fallback
-            return text, tokens
-        raise
+        except QuotaExhausted:
+            raise
+        except ProviderError as e:
+            if not (spec.native and _is_model_error(e)):
+                raise
+            errors.append(f"{model}: {e}")
+            log.warning("موديل %s مرفوض — تجربة بديل", model)
+            discovered = await _discover_models(spec)
+            for name in discovered:
+                if name not in tried:
+                    tried.append(name)
+            continue
+        if model != spec.model:
+            log.info("اعتمد موديل Gemini: %s", model)
+            _chosen_model[spec.key_id] = model
+            spec.model = model
+        return text, tokens
+    raise ProviderError(
+        "كل أسماء الموديلات مرفوضة: " + " | ".join(errors[-3:] or ["لا يوجد بديل"])
+    )
 
 
 async def complete(

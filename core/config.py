@@ -59,9 +59,15 @@ class Settings(BaseSettings):
     # حدود الطبقة المجانية (عدّلها عند تغيّر سياسات المزوّد)
     GEMINI_API_KEY: str = ""
     GEMINI_API_KEY_2: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash-lite"
-    # موديل بديل يُجرَّب تلقائيا إذا رفض المزوّد اسم الموديل (404)
-    GEMINI_FALLBACK_MODEL: str = "gemini-2.5-flash-lite"
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    # موديل بديل يُجرَّب تلقائيا إذا رفض Gemini اسم الموديل (404)
+    GEMINI_FALLBACK_MODEL: str = "gemini-3.8-flash"
+    # سلسلة موديلات مرتّبة (فاصلة) تُجرَّب بالترتيب عند فشل الموديل الأساسي
+    GEMINI_MODEL_CHAIN: str = (
+        "gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash,gemini-3.1-flash-lite"
+    )
+    # اكتشاف الموديلات المتاحة من /models عند فشل الاسم (يُخزَّن مؤقتا)
+    GEMINI_AUTODETECT: bool = True
     GEMINI_RPM: int = 10
     GEMINI_RPD: int = 1_000
     GEMINI_TPD: int = 2_000_000
@@ -211,6 +217,21 @@ class Settings(BaseSettings):
         }
         order = [p.strip().lower() for p in (self.AI_PROVIDER_ORDER or "").split(",") if p.strip()]
         return [p for p in order if keys.get(p)]
+
+    @property
+    def gemini_models(self) -> List[str]:
+        """سلسلة موديلات Gemini المطلوبة (بلا تكرار، الأساسي أولا)."""
+        out: List[str] = []
+        raw = [
+            self.GEMINI_MODEL,
+            *(self.GEMINI_MODEL_CHAIN or "").split(","),
+            self.GEMINI_FALLBACK_MODEL,
+        ]
+        for item in raw:
+            name = (item or "").strip()
+            if name and name not in out:
+                out.append(name)
+        return out
 
     @property
     def ai_configured(self) -> bool:

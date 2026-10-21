@@ -155,3 +155,165 @@ class TestGeminiPayload:
     def test_gemini_payload_none_mode(self) -> None:
         payload = _gemini_payload("s", "u", temperature=0.5, max_tokens=None, mode="none")
         assert "responseMimeType" not in payload["generationConfig"]
+
+
+class TestModelChain:
+    def test_settings_chain_dedup_and_order(self) -> None:
+        from core.config import Settings
+
+        s = Settings(
+            GEMINI_MODEL="a",
+            GEMINI_MODEL_CHAIN="a,b",
+            GEMINI_FALLBACK_MODEL="c",
+        )
+        assert s.gemini_models == ["a", "b", "c"]
+
+    def test_rank_prefers_text_flash_lite(self) -> None:
+        from pipeline.providers import _rank_models
+
+        ranked = _rank_models(
+            [
+                "gemini-2.5-flash-image",
+                "gemini-3.8-flash-tts",
+                "gemini-3.8-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+            ]
+        )
+        assert ranked[0] == "gemini-3.5-flash-lite"
+        assert "gemini-3.8-flash-tts" in ranked
+        assert "gemini-2.5-flash-image" in ranked
+        assert ranked.index("gemini-3.8-flash") < ranked.index("gemini-2.5-flash-image")
+
+    def test_model_error_detection(self) -> None:
+        from pipeline.providers import ProviderError, _is_model_error
+
+        assert _is_model_error(ProviderError("gemini: HTTP 404 no longer available"))
+        assert _is_model_error(ProviderError("model not supported"))
+        assert not _is_model_error(ProviderError("gemini: مفتاح غير صالح (401)"))
+        assert not _is_model_error(ProviderError("تجاوز الحد (429)"))
+
+
+class TestModelFailover:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch):
+        from pipeline import providers as p
+
+        monkeypatch.setattr(p, "_chosen_model", {}, raising=False)
+        monkeypatch.setattr(p, "_model_cache", {}, raising=False)
+        monkeypatch.setattr(p.settings, "GEMINI_AUTODETECT", False, raising=False)
+        return p
+
+    def _spec(self, p, model: str = "gemini-2.5-flash-lite"):
+        return p.ProviderSpec(
+            name="gemini",
+            base_url="https://example.invalid/v1beta",
+            model=model,
+            api_key="abc1234",
+            native=True,
+        )
+
+    def test_dead_model_switches_to_next(self, monkeypatch) -> None:
+        import asyncio
+
+        from pipeline import providers as p
+
+        calls: list[str] = []
+
+        async def fake_call(spec, system, user, **kwargs):
+            calls.append(spec.model)
+            if spec.model.startswith("gemini-2.5"):
+                raise p.ProviderError(
+                    f"{spec.name}: HTTP 404 no longer available to new users"
+                )
+            return "ok", 7
+
+        async def no_discovery(spec):
+            return []
+
+        monkeypatch.setattr(p, "_call_one", fake_call)
+        monkeypatch.setattr(p, "_discover_models", no_discovery)
+        spec = self._spec(p)
+        text, tokens = asyncio.run(
+            p._call_with_fallback(
+                spec, "s", "u", temperature=0.0, max_tokens=None, mode="none"
+            )
+        )
+        assert (text, tokens) == ("ok", 7)
+        assert calls[0] == "gemini-2.5-flash-lite"
+        assert calls[1] == "gemini-3.5-flash-lite"
+        assert spec.model == "gemini-3.5-flash-lite"
+        assert p._chosen_model[spec.key_id] == "gemini-3.5-flash-lite"
+
+    def test_discovered_model_is_used(self, monkeypatch) -> None:
+        import asyncio
+
+        from pipeline import providers as p
+
+        calls: list[str] = []
+
+        async def fake_call(spec, system, user, **kwargs):
+            calls.append(spec.model)
+            if spec.model.startswith("gemini-2.5"):
+                raise p.ProviderError(f"{spec.name}: HTTP 404 not found")
+            if spec.model == "gemini-9.9-ultra":
+                return "from-discovery", 3
+            raise p.ProviderError(f"{spec.name}: HTTP 404 not found")
+
+        async def fake_discovery(spec):
+            return ["gemini-9.9-ultra"]
+
+        monkeypatch.setattr(p.settings, "GEMINI_AUTODETECT", True)
+        monkeypatch.setattr(p, "_call_one", fake_call)
+        monkeypatch.setattr(p, "_discover_models", fake_discovery)
+        spec = self._spec(p)
+        text, _ = asyncio.run(
+            p._call_with_fallback(
+                spec, "s", "u", temperature=0.0, max_tokens=None, mode="none"
+            )
+        )
+        assert text == "from-discovery"
+        assert "gemini-9.9-ultra" in calls
+
+    def test_non_model_error_is_not_retried(self, monkeypatch) -> None:
+        import asyncio
+
+        from pipeline import providers as p
+
+        calls: list[str] = []
+
+        async def fake_call(spec, system, user, **kwargs):
+            calls.append(spec.model)
+            raise p.ProviderError(f"{spec.name}: مفتاح غير صالح (401)")
+
+        monkeypatch.setattr(p, "_call_one", fake_call)
+        with pytest.raises(p.ProviderError):
+            asyncio.run(
+                p._call_with_fallback(
+                    self._spec(p), "s", "u",
+                    temperature=0.0, max_tokens=None, mode="none",
+                )
+            )
+        assert calls == ["gemini-2.5-flash-lite"]
+
+    def test_all_models_fail_reports_names(self, monkeypatch) -> None:
+        import asyncio
+
+        from pipeline import providers as p
+
+        async def fake_call(spec, system, user, **kwargs):
+            raise p.ProviderError(f"{spec.name}: HTTP 404 not found")
+
+        async def no_discovery(spec):
+            return []
+
+        monkeypatch.setattr(p, "_call_one", fake_call)
+        monkeypatch.setattr(p, "_discover_models", no_discovery)
+        with pytest.raises(p.ProviderError) as exc:
+            asyncio.run(
+                p._call_with_fallback(
+                    self._spec(p), "s", "u",
+                    temperature=0.0, max_tokens=None, mode="none",
+                )
+            )
+        assert "كل أسماء الموديلات مرفوضة" in str(exc.value)

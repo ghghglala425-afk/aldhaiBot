@@ -85,6 +85,7 @@ async def health():
         "env": settings.ENV,
         "bot_configured": bool(settings.BOT_TOKEN),
         "ai_configured": settings.ai_configured,
+        "models": settings.gemini_models,
         "database": db_kind,
         "database_host": db_host,
     }

@@ -608,6 +608,8 @@ def _start_health_server(port: int) -> None:
                         "configured": settings.ai_configured,
                         "providers": settings.free_providers,
                         "model": settings.GEMINI_MODEL,
+                        "model_chain": settings.gemini_models,
+                        "autodetect": settings.GEMINI_AUTODETECT,
                     },
                     "bot_token": bool(settings.BOT_TOKEN),
                     "token_valid": _token_state["valid"] if _token_state["checked"] else None,
