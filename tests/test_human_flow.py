@@ -243,3 +243,22 @@ def test_exercise_review_mode_when_no_expected_output():
         except Exception as exc:  # ApplicationHandlerStop متوقع
             assert exc.__class__.__name__ == "ApplicationHandlerStop"
     assert "ليس بعد" in child.edit_text.await_args.args[0]
+
+
+def test_exercise_start_refuses_without_sandbox():
+    asyncio.run(_prepare())
+
+    async def _demo_id() -> int:
+        async with SessionLocal() as s:
+            return int(await s.scalar(select(Lesson.id).where(Lesson.slug == "hello-security")))
+
+    lesson_id = asyncio.run(_demo_id())
+    ctx = _context()
+    send = AsyncMock()
+    with (
+        patch("pipeline.sandbox_runner.available_languages", AsyncMock(return_value=[])),
+        patch("app.tg.send_text", send),
+    ):
+        asyncio.run(exercise_handler._start(FakeMessage(), ctx, lesson_id))
+    assert "exercise" not in ctx.user_data
+    assert "Docker" in send.await_args.args[1]

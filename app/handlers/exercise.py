@@ -75,6 +75,16 @@ async def _start(message, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) ->
         await tg.send_text(message, "🧪 لا يوجد مثال كود لهذا الدرس بعد — سيُضاف مع اكتمال المحتوى.")
         return
 
+    from pipeline.sandbox_runner import available_languages
+
+    if not await available_languages():
+        await tg.send_text(
+            message,
+            "⚠️ بيئة التنفيذ المعزولة غير متاحة على الخادم الآن "
+            "(شغّل Docker). التنفيذ على مضيف الخادم ممنوع نهائيا. يمكنك مراجعة الحل فقط.",
+        )
+        return
+
     expected = _norm(code.expected_output)
     if not expected:
         probe = await run_code(code.language or "python", code.code, exec_enabled=True)
@@ -86,6 +96,7 @@ async def _start(message, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) ->
                 "⚠️ بيئة التنفيذ المعزولة غير متاحة على الخادم الآن "
                 "(شغّل Docker). التنفيذ على مضيف الخادم ممنوع نهائيا. يمكنك مراجعة الحل فقط.",
             )
+            return
 
     context.user_data["exercise"] = {
         "lesson_id": lesson_id,
