@@ -7,7 +7,7 @@ import asyncio
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import CallbackQueryHandler, CommandHandler, ContextTypes
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import lesson_view as lv
 from app.handlers.common import ai_error_text, animate_status
@@ -299,9 +299,19 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.warning("تعذّر تسجيل بدء الدرس: %s", e)
 
     # (1) شاشة الدرس تظهر فورا — بلا أي انتظار للذكاء الاصطناعي
-    await _render_lesson(bot, chat_id, lesson_id, reply_to=update.effective_message, user=user)
+    await _display_and_build(bot, chat_id, lesson_id, user=user, reply_to=update.effective_message)
 
-    # (2) البناء في الخلفية، ثم يصل المحتوى الكامل تلقائيا في نفس المحادثة
+
+async def _display_and_build(
+    bot, chat_id: int, lesson_id: int, *, user=None, reply_to=None
+) -> None:
+    """يعرض الدرس فورا ثم يبني محتواه أو يحضّر التالي في الخلفية."""
+    async with SessionLocal() as s:
+        lesson = await s.get(Lesson, lesson_id)
+        if not lesson:
+            return
+        is_outline = lesson.status == "outline" or not lesson.content_md
+    await _render_lesson(bot, chat_id, lesson_id, reply_to=reply_to, user=user)
     if is_outline:
         if settings.GEN_LAZY_ON_OPEN and settings.ai_configured:
             _spawn(_auto_build_and_push(bot, chat_id, lesson_id))
@@ -380,6 +390,7 @@ async def _render_lesson(
         lesson_number=lesson_no,
         total_lessons=total_lessons,
         progress_percent=progress_pct,
+        day_number=lesson_no,
     )
     objectives = lv.render_objectives(lesson.objectives)
     await tg.send_text(
@@ -459,7 +470,15 @@ async def _render_lesson(
             ]
         )
     else:
-        buttons.append([InlineKeyboardButton("🧠 بدء الاختبار", callback_data=f"qz_start:{lesson_id}")])
+        buttons.append(
+            [
+                InlineKeyboardButton("🧠 بدء الاختبار", callback_data=f"qz_start:{lesson_id}"),
+                InlineKeyboardButton("🧪 تمرين الكود", callback_data=f"exs:{lesson_id}"),
+            ]
+        )
+    buttons.append(
+        [InlineKeyboardButton("📎 ملحقات الدرس", callback_data=f"latt:{lesson_id}")]
+    )
     if codes:
         buttons.insert(
             0,
@@ -467,12 +486,6 @@ async def _render_lesson(
         )
     if labs:
         buttons.append([InlineKeyboardButton(f"🧪 المختبرات ({len(labs)})", callback_data=f"lab_list:{lesson_id}")])
-    buttons.append(
-        [
-            InlineKeyboardButton("🔖 حفظ", callback_data=f"bm:{lesson_id}"),
-            InlineKeyboardButton("📝 ملاحظة", callback_data=f"note:{lesson_id}"),
-        ]
-    )
     buttons.append(
         [
             InlineKeyboardButton("🤖 اشرح الدرس", callback_data=f"aex:{lesson_id}"),
@@ -485,11 +498,73 @@ async def _render_lesson(
             InlineKeyboardButton("🔬 غوص عميق", callback_data="x:deep"),
         ]
     )
-    buttons.append([InlineKeyboardButton("📤 تصدير الدرس", callback_data=f"export:{lesson_id}")])
     await tg.send_text(
         message,
         "جاهز؟" if not is_outline else "المحتوى قيد البناء تلقائيا 👆",
         reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def lesson_attachments(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يعرض كل اختيارات الدرس مجمّعة في زر واحد (ملحقات الدرس)."""
+    q = update.callback_query
+    await q.answer()
+    lesson_id = int(q.data.split(":")[1])
+    async with SessionLocal() as s:
+        lesson = await s.get(Lesson, lesson_id)
+        if not lesson:
+            await q.message.reply_text("الدرس غير موجود.")
+            return
+        n_codes = int(
+            await s.scalar(
+                select(func.count()).select_from(CodeSample).where(CodeSample.lesson_id == lesson_id)
+            )
+            or 0
+        )
+        labs = await labs_for_lesson(s, lesson_id)
+        n_assets = int(
+            await s.scalar(
+                select(func.count()).select_from(LessonAsset).where(LessonAsset.lesson_id == lesson_id)
+            )
+            or 0
+        )
+    ready = lesson.status != "outline" and bool(lesson.content_md)
+
+    rows: list[list[InlineKeyboardButton]] = []
+    if ready:
+        rows.append(
+            [
+                InlineKeyboardButton("🧠 الاختبار", callback_data=f"qz_start:{lesson_id}"),
+                InlineKeyboardButton("🧪 تمرين الكود", callback_data=f"exs:{lesson_id}"),
+            ]
+        )
+    if n_codes:
+        rows.append(
+            [InlineKeyboardButton(f"📚 موسوعة الأكواد ({n_codes})", callback_data=f"codelist:{lesson_id}")]
+        )
+    if labs:
+        rows.append([InlineKeyboardButton(f"🧪 المختبرات ({len(labs)})", callback_data=f"lab_list:{lesson_id}")])
+    if n_assets:
+        rows.append([InlineKeyboardButton("🎧 الوسائط المرفقة", callback_data=f"lass:{lesson_id}")])
+    rows.append(
+        [
+            InlineKeyboardButton("🔖 حفظ", callback_data=f"bm:{lesson_id}"),
+            InlineKeyboardButton("📝 ملاحظة", callback_data=f"note:{lesson_id}"),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton("🤖 اشرح الدرس", callback_data=f"aex:{lesson_id}"),
+            InlineKeyboardButton("💬 نقاش", callback_data=f"qa:{lesson_id}"),
+        ]
+    )
+    rows.append([InlineKeyboardButton("📤 تصدير الدرس", callback_data=f"export:{lesson_id}")])
+    rows.append([InlineKeyboardButton("⬅️ رجوع للدرس", callback_data=f"lesson:{lesson_id}")])
+    await tg.send_text(
+        q.message,
+        f"📎 <b>ملحقات الدرس</b> — {lv.esc(lesson.title)}\n<i>كل ما تحتاجه لهذا الدرس في مكان واحد.</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(rows),
     )
 
 
@@ -621,6 +696,22 @@ async def _send_assets(message, assets: list[LessonAsset]) -> None:
                 await message.reply_document(a.url)
         except Exception as e:  # noqa: BLE001
             log.warning("تعذّر إرسال وسيط %s: %s", a.id, e)
+
+
+async def lesson_assets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يعرض وسائط/ملفات الدرس المرفقة."""
+    q = update.callback_query
+    await q.answer()
+    lesson_id = int(q.data.split(":")[1])
+    async with SessionLocal() as s:
+        assets = list(
+            (await s.execute(select(LessonAsset).where(LessonAsset.lesson_id == lesson_id))).scalars().all()
+        )
+    if not assets:
+        await tg.send_text(q.message, "🎧 لا توجد وسائط مرفقة بهذا الدرس.")
+        return
+    await tg.send_text(q.message, f"🎧 <b>وسائط الدرس</b> ({len(assets)})", parse_mode=ParseMode.HTML)
+    await _send_assets(q.message, assets)
 
 
 async def generate_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -818,12 +909,51 @@ async def quiz_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if cert:
             msg += f"\n🎓 شهادة إتمام الكورس: `{cert.code}`"
         await tg.send_text(update.effective_message, msg, parse_mode=ParseMode.MARKDOWN)
+        await _after_quiz_pass(update, context, lesson)
     else:
         await tg.send_text(update.effective_message, 
             f"😅 نسبتك {result['score']}% — تحتاج {lesson.min_score}%. أعد المحاولة عبر /courses."
         )
     
     context.user_data.pop("quiz", None)
+
+
+async def _after_quiz_pass(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson: Lesson) -> None:
+    """بعد الاجتياز: يفتح الدرس التالي تلقائيا ثم ينتقل لتمرين البيئة المعزولة."""
+    from app.handlers import exercise as ex
+    from core.learning import lesson_day, next_lesson_id
+
+    chat_id = update.effective_chat.id
+    async with SessionLocal() as s:
+        nxt = await next_lesson_id(s, lesson)
+        nxt_lesson = await s.get(Lesson, nxt) if nxt else None
+        nxt_day = await lesson_day(s, nxt_lesson) if nxt_lesson else None
+    if nxt and nxt_lesson:
+        is_outline = nxt_lesson.status == "outline" or not nxt_lesson.content_md
+        await _render_lesson(
+            context.bot, chat_id, nxt,
+            notice=(
+                "✅ <b>أُنجز الدرس!</b> فتحنا لك الدرس التالي تلقائيا.\n"
+                f"📅 اليوم {nxt_day or ''} — {lv.esc(nxt_lesson.title)}"
+            ),
+        )
+        if is_outline:
+            if settings.GEN_LAZY_ON_OPEN and settings.ai_configured:
+                _spawn(_auto_build_and_push(context.bot, chat_id, nxt))
+        else:
+            _spawn(_prefetch_next(nxt))
+    else:
+        await tg.send_text(
+            update.effective_message,
+            "🎓 <b>أكملت كل دروس هذا المسار!</b> راجع دروسك أو ابدأ لغة جديدة.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    # انتقال تلقائي إلى تمرين الكود في بيئة معزولة.
+    try:
+        await ex.auto_start_after_quiz(update.effective_message, context, lesson.id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر بدء تمرين ما بعد الاختبار: %s", e)
 
 
 async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -869,14 +999,17 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if cert:
             msg += f"\n🎓 شهادة إتمام الكورس: `{cert.code}`"
         await tg.send_text(update.effective_message, msg, parse_mode=ParseMode.MARKDOWN)
-    else:
-        await tg.send_text(update.effective_message, 
-            f"😅 نسبتك {result['score']}% — تحتاج {lesson.min_score}%. أعد المحاولة عبر /courses."
-        )
-    
-    # Show detailed review with correct/incorrect answers
+        await _after_quiz_pass(update, context, lesson)
+        return
+
+    await tg.send_text(update.effective_message, 
+        f"😅 نسبتك {result['score']}% — تحتاج {lesson.min_score}%. أعد المحاولة عبر /courses."
+    )
+    # مراجعة الإجابات بعد الفشل (نحتاج حالة الاختبار لعرض التصحيح).
+    context.user_data["quiz"] = st
     st["show_feedback"] = True
     await _render_question(update.effective_message, context, show_feedback=True)
+    context.user_data.pop("quiz", None)
 
 
 # ---------------------------------------------------------------------
@@ -1008,6 +1141,8 @@ def register_handlers(app) -> None:
     app.add_handler(CallbackQueryHandler(courses_page, pattern=r"^courses:\d+$"))
     app.add_handler(CallbackQueryHandler(course_callback, pattern=r"^course:\d+(:\d+)?$"))
     app.add_handler(CallbackQueryHandler(lesson_callback, pattern=r"^lesson:\d+$"))
+    app.add_handler(CallbackQueryHandler(lesson_attachments, pattern=r"^latt:\d+$"))
+    app.add_handler(CallbackQueryHandler(lesson_assets, pattern=r"^lass:\d+$"))
     app.add_handler(CallbackQueryHandler(generate_now, pattern=r"^gen:\d+$"))
     app.add_handler(CallbackQueryHandler(code_list, pattern=r"^codelist:\d+$"))
     app.add_handler(CallbackQueryHandler(code_detail, pattern=r"^code:\d+$"))

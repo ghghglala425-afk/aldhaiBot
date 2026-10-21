@@ -591,12 +591,12 @@ async def prebuild_user_languages(session, user_id: int, *, priority: int | None
 
 async def _bg_budget_ok() -> bool:
     """هل تسمح الميزانية المتبقية بمواصلة البناء الخلفي؟"""
-    from pipeline.providers import budget_left, budget_reserve
+    from pipeline.providers import interactive_headroom
 
-    left = await budget_left()
-    if left is None:
-        return True
-    return left > await budget_reserve()
+    tokens_left, requests_left = await interactive_headroom()
+    if tokens_left <= 0:
+        return False
+    return requests_left > max(0, int(getattr(settings, "AI_RESERVE_RPD", 80) or 0))
 
 
 async def _recent_failures() -> int:

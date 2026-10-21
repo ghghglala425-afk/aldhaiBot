@@ -23,6 +23,7 @@ from app.handlers import (
     admin,
     assistant,
     auth,
+    exercise,
     export,
     labs,
     languages,
@@ -328,6 +329,7 @@ def build_application() -> None | Application:
     menu.register_handlers(app)
     start.register_handlers(app)
     learn.register_handlers(app)
+    exercise.register_handlers(app)
     paths.register_handlers(app)
     languages.register_handlers(app)
     labs.register_handlers(app)

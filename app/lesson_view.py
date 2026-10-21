@@ -150,6 +150,7 @@ def render_header(
     lesson_number: int | None = None,
     total_lessons: int | None = None,
     progress_percent: float | None = None,
+    day_number: int | None = None,
 ) -> str:
     """ترويسة الدرس — تدرّج بصري + شريط تقدم."""
     diff_map = {
@@ -165,6 +166,8 @@ def render_header(
         total = f"/{total_lessons}" if total_lessons else ""
         head += f"  <i>(الدرس {lesson_number}{total})</i>"
     lines.append(head)
+    if day_number:
+        lines.append(f"📅 <b>اليوم {day_number}</b> — درس اليوم رقم {day_number}")
     lines.append(SEP)
 
     meta = [f"{diff_emoji} <b>{esc(diff_name)}</b>", f"{EMOJI['clock']} {int(est_minutes or 0)} دقيقة"]

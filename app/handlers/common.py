@@ -83,7 +83,12 @@ def ai_error_text(err: Exception | str | None) -> str:
             "ارفع AI_DAILY_TOKEN_BUDGET أو أضف مزوّدا/مفتاحا احتياطيا، ثم أعد المحاولة."
         )
     if "فشل كل المزوّدين" in text:
-        return "خدمة الذكاء الاصطناعي غير متاحة الآن (تحقّق من المفاتيح والحصة في الخادم)."
+        detail = text.split(":", 1)[-1].strip() if ":" in text else ""
+        extra = f"\nالأسباب: {detail[:240]}" if detail else ""
+        return (
+            "خدمة الذكاء الاصطناعي غير متاحة الآن (تحقّق من المفاتيح والحصة في الخادم)."
+            + extra
+        )
     if "timeout" in low or "مهلة" in text or "timed out" in low:
         return "انتهت مهلة انتظار مزوّد الذكاء الاصطناعي. أعد المحاولة بعد لحظات."
     if "no such table" in low or "operationalerror" in low:

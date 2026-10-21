@@ -10,7 +10,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from core.db import SessionLocal
-from core.learning import todays_daily
+from core.learning import lesson_day, todays_daily
 from core.logging import get_logger
 from core.models import User
 from core.repo import get_user_by_telegram
@@ -37,12 +37,20 @@ async def _send_daily(context: ContextTypes.DEFAULT_TYPE) -> None:
                 lesson = await todays_daily(s, user)
             if not lesson:
                 continue
+            day = await lesson_day(s, lesson)
+            head = "🎯 *درس اليوم*" + (f" — اليوم {day}" if day else "")
             await context.bot.send_message(
                 tg_id,
-                f"🎯 *درس اليوم*\n\n📖 {lesson.title}\n{(lesson.summary or '')[:180]}",
+                f"{head}\n\n📖 {lesson.title}\n{(lesson.summary or '')[:180]}",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("▶️ افتح الدرس", callback_data=f"lesson:{lesson.id}")]]
+                    [
+                        [InlineKeyboardButton("▶️ افتح الدرس", callback_data=f"lesson:{lesson.id}")],
+                        [
+                            InlineKeyboardButton("🧪 تمرين معزول", callback_data=f"exs:{lesson.id}"),
+                            InlineKeyboardButton("📎 الملحقات", callback_data=f"latt:{lesson.id}"),
+                        ],
+                    ]
                 ),
             )
             sent += 1

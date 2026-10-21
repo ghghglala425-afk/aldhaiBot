@@ -182,6 +182,31 @@ async def budget_reserve() -> int:
     return int(settings.AI_DAILY_TOKEN_BUDGET * pct / 100)
 
 
+async def interactive_headroom() -> tuple[int, int]:
+    """(توكنز متبقية بعد الحجز, أضيق حد متبقٍ للمزوّد الأول طلبات/توكنز).
+
+    تُستخدم لحماية التفاعل الفوري (المساعد/فتح الدرس) من جوع مهام الخلفية.
+    """
+    from core.db import SessionLocal
+
+    big = 10**9
+    try:
+        async with SessionLocal() as session:
+            left = await _budget_left(session)
+            left_after = big if left is None else left - await budget_reserve()
+            specs = [p for p in build_providers() if p.ready()]
+            if not specs:
+                return left_after, 0
+            spec = specs[0]
+            row = await _usage_row(session, spec.name)
+            reqs_left = (spec.rpd - row.requests) if spec.rpd else big
+            tok_left = (spec.tpd - row.tokens) if spec.tpd else big
+            return left_after, min(reqs_left, tok_left)
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر حساب مساحة التفاعل: %s", e)
+        return big, big
+
+
 async def _can_call(session, spec: ProviderSpec) -> bool:
     row = await _usage_row(session, spec.name)
     if spec.rpd and row.requests >= spec.rpd:

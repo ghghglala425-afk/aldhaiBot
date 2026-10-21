@@ -23,7 +23,7 @@ from core.gamification import (
     user_rank,
     xp_leaderboard,
 )
-from core.learning import todays_daily
+from core.learning import lesson_day, todays_daily
 from core.logging import get_logger
 from core.models import Certificate, Course, Lesson
 from core.repo import get_user_by_telegram
@@ -48,11 +48,19 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not lesson:
             await tg.send_text(update.effective_message, "🎉 أكملت كل الدروس المتاحة! تابع الإضافات قريبا.")
             return
+        day = await lesson_day(s, lesson)
+        head = "🎯 *درس اليوم*" + (f" — اليوم {day}" if day else "")
         await tg.send_text(update.effective_message, 
-            f"🎯 *درس اليوم*\n\n📖 {lesson.title}\n\n{(lesson.summary or '')[:200]}",
+            f"{head}\n\n📖 {lesson.title}\n\n{(lesson.summary or '')[:200]}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("▶️ افتح الدرس", callback_data=f"lesson:{lesson.id}")]]
+                [
+                    [InlineKeyboardButton("▶️ افتح الدرس", callback_data=f"lesson:{lesson.id}")],
+                    [
+                        InlineKeyboardButton("🧪 تمرين معزول", callback_data=f"exs:{lesson.id}"),
+                        InlineKeyboardButton("📎 الملحقات", callback_data=f"latt:{lesson.id}"),
+                    ],
+                ]
             ),
         )
 

@@ -153,6 +153,8 @@ class Settings(BaseSettings):
     GEN_PREBUILD_PRIORITY: int = 2
     # نسبة الميزانية اليومية المحجوزة للتفاعل الفوري (لا تلمسها مهام الخلفية).
     AI_RESERVE_PCT: int = 25
+    # أقل عدد طلبات يُترك للتفاعل الفوري قبل أن توقف مهام الخلفية نفسها.
+    AI_RESERVE_RPD: int = 80
     # عامل الخلفية داخل عملية البوت
     GEN_WORKER_CONCURRENCY: int = 4
     GEN_QUEUE_POLL: int = 5

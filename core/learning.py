@@ -56,6 +56,44 @@ async def get_progress(session: AsyncSession, user_id: int, lesson_id: int) -> P
     )
 
 
+async def lesson_day(session: AsyncSession, lesson: Lesson) -> int | None:
+    """رقم «اليوم» لدرس = ترتيبه العالمي داخل الكورس (الدرس الأول = اليوم 1)."""
+    try:
+        stage = await session.get(Stage, lesson.stage_id)
+        if not stage:
+            return None
+        lessons = await ordered_lessons(session, stage.course_id)
+        ids = [x.id for x in lessons]
+        if lesson.id not in ids:
+            return None
+        return ids.index(lesson.id) + 1
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def next_lesson_id(session: AsyncSession, lesson: Lesson, *, only_available: bool = False) -> int | None:
+    """معرّف الدرس التالي في نفس الكورس (أو None في النهاية)."""
+    try:
+        stage = await session.get(Stage, lesson.stage_id)
+        if not stage:
+            return None
+        lessons = await ordered_lessons(session, stage.course_id)
+        ids = [x.id for x in lessons]
+        if lesson.id not in ids:
+            return None
+        idx = ids.index(lesson.id)
+        if idx + 1 >= len(ids):
+            return None
+        nxt = ids[idx + 1]
+        if only_available:
+            row = await session.get(Lesson, nxt)
+            if not row or row.status == "outline":
+                return None
+        return nxt
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def _ensure(session: AsyncSession, user_id: int, lesson_id: int) -> Progress:
     p = await get_progress(session, user_id, lesson_id)
     if p is None:
