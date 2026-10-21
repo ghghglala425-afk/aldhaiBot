@@ -21,6 +21,7 @@ from core.learning import (
     STATUS_PASSED,
     get_progress,
     labs_for_lesson,
+    next_lesson_id,
     start_lesson,
     status_map,
     submit_quiz,
@@ -369,6 +370,7 @@ async def _render_lesson(
     prev_id = None
     next_id = None
     lesson = None
+    passed_before = False
 
     if notice:
         await tg.send_text(
@@ -412,6 +414,8 @@ async def _render_lesson(
                         rows = await status_map(s, user, stage.course_id)
                         done = sum(1 for r in rows if r["status"] == STATUS_PASSED)
                         progress_pct = round(done / max(1, len(rows)) * 100)
+                        prog = await get_progress(s, user.id, lesson_id)
+                        passed_before = bool(prog and prog.status == STATUS_PASSED)
         except Exception as e:  # noqa: BLE001
             log.debug("تعذّر حساب التقدم: %s", e)
 
@@ -515,7 +519,10 @@ async def _render_lesson(
     else:
         buttons.append(
             [
-                InlineKeyboardButton("🧠 بدء الاختبار", callback_data=f"qz_start:{lesson_id}"),
+                InlineKeyboardButton(
+                    "🔁 إعادة الاختبار" if passed_before else "🧠 بدء الاختبار",
+                    callback_data=f"qz_start:{lesson_id}",
+                ),
                 InlineKeyboardButton("🧪 تمرين الكود", callback_data=f"exs:{lesson_id}"),
             ]
         )
@@ -773,6 +780,27 @@ async def generate_now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # ---------------------------------------------------------------------
 #  الاختبار
 # ---------------------------------------------------------------------
+def _quiz_done_kb(
+    lesson_id: int, next_id: int | None, *, passed: bool
+) -> InlineKeyboardMarkup:
+    """أزرار ما بعد الاختبار: التالي، إعادة، تمرين، الدرس."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if passed and next_id:
+        rows.append(
+            [InlineKeyboardButton("➡️ الدرس التالي", callback_data=f"lesson:{next_id}")]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton("🔁 إعادة الاختبار", callback_data=f"qz_start:{lesson_id}"),
+            InlineKeyboardButton("🧪 تمرين الدرس", callback_data=f"exs:{lesson_id}"),
+        ]
+    )
+    rows.append(
+        [InlineKeyboardButton("📖 العودة للدرس", callback_data=f"lesson:{lesson_id}")]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
 async def _render_question(message, context: ContextTypes.DEFAULT_TYPE, show_feedback: bool = False) -> None:
     st = context.user_data["quiz"]
     qid = st["qids"][st["i"]]
@@ -834,7 +862,12 @@ async def _render_question(message, context: ContextTypes.DEFAULT_TYPE, show_fee
         nav.append(InlineKeyboardButton("التالي ➡️", callback_data="qnext"))
     else:
         if show_feedback:
-            nav.append(InlineKeyboardButton("📊 عرض النتيجة", callback_data="qresult"))
+            nav.append(
+                InlineKeyboardButton(
+                    "🔁 إعادة الاختبار",
+                    callback_data=f"qz_start:{st['lesson_id']}",
+                )
+            )
         else:
             nav.append(InlineKeyboardButton("🏁 إنهاء", callback_data="qfinish"))
     buttons.append(nav)
@@ -963,8 +996,7 @@ async def quiz_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def _after_quiz_pass(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson: Lesson) -> None:
-    """بعد الاجتياز: يفتح الدرس التالي تلقائيا ثم ينتقل لتمرين البيئة المعزولة."""
-    from app.handlers import exercise as ex
+    """بعد الاجتياز: يفتح الدرس التالي تلقائيا (والتمرين متاح بزر مستقل)."""
     from core.learning import lesson_day, next_lesson_id
 
     chat_id = update.effective_chat.id
@@ -989,12 +1021,6 @@ async def _after_quiz_pass(update: Update, context: ContextTypes.DEFAULT_TYPE, l
             parse_mode=ParseMode.HTML,
         )
 
-    # انتقال تلقائي إلى تمرين الكود في بيئة معزولة.
-    try:
-        await ex.auto_start_after_quiz(update.effective_message, context, lesson.id)
-    except Exception as e:  # noqa: BLE001
-        log.warning("تعذّر بدء تمرين ما بعد الاختبار: %s", e)
-
 
 async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
@@ -1011,6 +1037,7 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await tg.edit_text(q, "سجّل دخولك أولا.")
             return
         result = await submit_quiz(s, user, lesson, responses)
+        nxt_id = await next_lesson_id(s, lesson)
         # شهادة الإتمام
         cert = None
         stage = await s.get(Stage, lesson.stage_id)
@@ -1030,24 +1057,36 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if result["passed"]:
-        msg = (
-            f"🎉 *أحسنت!* نجحت بنسبة {result['score']}%\n"
-            f"⭐ +{result['xp']} نقطة · 🔥 سلسلة {user.streak_count} يوم"
-        )
+        msg = f"🎉 *أحسنت!* نجحت بنسبة {result['score']}%\n"
+        if result.get("xp"):
+            msg += f"⭐ +{result['xp']} نقطة · 🔥 سلسلة {user.streak_count} يوم\n"
+        else:
+            msg += "🔁 إعادة ناجحة — لا نقاط إضافية لهذا الدرس.\n"
         if result.get("badges"):
-            msg += "\n🏅 شارات جديدة: " + ", ".join(result["badges"])
+            msg += "🏅 شارات جديدة: " + ", ".join(result["badges"]) + "\n"
         if cert:
-            msg += f"\n🎓 شهادة إتمام الكورس: `{cert.code}`"
-        await tg.send_text(update.effective_message, msg, parse_mode=ParseMode.MARKDOWN)
+            msg += f"🎓 شهادة إتمام الكورس: `{cert.code}`\n"
+        if nxt_id:
+            msg += "➡️ فتحنا لك الدرس التالي."
+        await tg.send_text(
+            update.effective_message,
+            msg,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_quiz_done_kb(lesson_id, nxt_id, passed=True),
+        )
         await _after_quiz_pass(update, context, lesson)
         return
 
-    await tg.send_text(update.effective_message, 
-        f"😅 نسبتك {result['score']}% — تحتاج {lesson.min_score}%. أعد المحاولة عبر /courses."
+    await tg.send_text(
+        update.effective_message,
+        f"😅 نسبتك {result['score']}% — تحتاج {lesson.min_score}%.\n"
+        "يمكنك إعادة الاختبار الآن أو مراجعة الإجابات بالأسفل.",
+        reply_markup=_quiz_done_kb(lesson_id, nxt_id, passed=False),
     )
-    # مراجعة الإجابات بعد الفشل (نحتاج حالة الاختبار لعرض التصحيح).
+    # مراجعة الإجابات بعد الفشل من السؤال الأول.
     context.user_data["quiz"] = st
     st["show_feedback"] = True
+    st["i"] = 0
     await _render_question(update.effective_message, context, show_feedback=True)
     context.user_data.pop("quiz", None)
 

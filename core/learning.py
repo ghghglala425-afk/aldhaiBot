@@ -218,6 +218,8 @@ async def submit_quiz(
     if lesson.max_attempts and prog.attempts_count >= lesson.max_attempts:
         return {"ok": False, "error": "استنفدت عدد المحاولات المسموح."}
 
+    was_passed = prog.status == STATUS_PASSED
+
     res = await session.execute(
         select(Question).where(Question.quiz_id == quiz.id).order_by(Question.order_index)
     )
@@ -254,14 +256,19 @@ async def submit_quiz(
 
     prog.attempts_count = (prog.attempts_count or 0) + 1
     prog.best_score = max(prog.best_score or 0, score)
-    prog.status = STATUS_PASSED if passed else STATUS_IN_PROGRESS
+    if passed:
+        prog.status = STATUS_PASSED
+    elif not was_passed:
+        # إعادة اختبار درس مجتاز لا تُسقط إنجازه.
+        prog.status = STATUS_IN_PROGRESS
     if prog.started_at is None:
         prog.started_at = dt.datetime.now(dt.timezone.utc)
     if passed and not prog.completed_at:
         prog.completed_at = dt.datetime.now(dt.timezone.utc)
 
     new_badges: list[str] = []
-    if passed:
+    first_pass = passed and not was_passed
+    if first_pass:
         await add_xp(session, user, lesson.xp_reward or 50, "lesson_pass", str(lesson.id))
         await gami.update_streak(session, user)
         new_badges = await gami.evaluate_badges(session, user)
@@ -275,7 +282,8 @@ async def submit_quiz(
 
     return {
         "ok": True, "score": score, "passed": passed, "detail": detail,
-        "xp": lesson.xp_reward if passed else 0, "badges": new_badges,
+        "xp": lesson.xp_reward if first_pass else 0, "badges": new_badges,
+        "first_pass": first_pass,
     }
 
 
