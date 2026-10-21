@@ -180,7 +180,11 @@ GET https://<your-service>.up.railway.app/health
 | `SECRET_KEY` | `‏<سلسلة عشوائية 64>` | سري |
 | `ENV` | `prod` | |
 | `LOG_LEVEL` | `INFO` | |
-| `VERIFY_EXEC` | `0` | بلا Docker |
+| `VERIFY_EXEC` | `1` عند استخدام `EXEC_API_URL`، وإلا `0` | تفعيل تنفيذ الأكواد (بدون Docker عبر Piston) |
+| `EXEC_PROVIDER` | `judge0` | مزوّد التنفيذ الخارجي (`judge0` أو `piston`) |
+| `EXEC_API_URL` | `https://ce.judge0.com` | Judge0 CE مجاني بلا مفتاح — يفعّل التمارين بلا Docker |
+| `EXEC_API_KEY` | *(فارغ)* | `X-Auth-Token` لـJudge0 أو `Bearer` لـPiston |
+| `EXEC_API_TIMEOUT` | `20` | مهلة طلب التنفيذ (ثانية) |
 | `DB_POOL_SIZE` | `5` | اتصالات دائمة لكل خدمة |
 | `DB_MAX_OVERFLOW` | `5` | اتصال إضافي عند الذروة |
 | `LOG_LEVEL` | `INFO` | |
@@ -292,7 +296,7 @@ railway up
 | الملاحظة | التفاصيل |
 |---|---|
 | **نسخة واحدة فقط** | `Num Replicas = 1` — نسختان في Polling = `Conflict: terminated by other getUpdates` |
-| **لا Docker داخلي** | `VERIFY_EXEC=0` — لا تنفيذ أكواد داخل Railway |
+| **لا Docker داخلي** | `VERIFY_EXEC=0` — لا تنفيذ أكواد على Railway. فعّل التمارين عبر `EXEC_API_URL` (Piston خارجي معزول) |
 | **عامل التوليد** | يعمل **داخل** عملية البوت — لا حاجة لخدمة Celery منفصلة |
 | **الشحن** | `AI_DAILY_TOKEN_BUDGET` يحمي من استنفاد حصة Gemini |
 | **Tab Switching** | مجاني (2 domains) · Hobby: 4 · Pro: 20 |

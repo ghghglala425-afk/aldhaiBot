@@ -159,11 +159,17 @@ async def my_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    from pipeline.sandbox_runner import docker_available
+    from pipeline.sandbox_runner import docker_available, provider_name, remote_available
     from pipeline.providers import usage_snapshot
 
     docker_on = await docker_available()
-    exec_mode = "Docker فقط (معزول)" if docker_on else "معطّل — التنفيذ على المضيف ممنوع"
+    remote_on = await remote_available()
+    if remote_on:
+        exec_mode = f"خدمة تنفيذ خارجية ({provider_name()})"
+    elif docker_on:
+        exec_mode = "Docker فقط (معزول)"
+    else:
+        exec_mode = "معطّل — لا Docker ولا خدمة تنفيذ خارجية"
 
     db = "SQLite" if settings.is_sqlite else "PostgreSQL"
     targets = "هدف خارجي/حاويات" if docker_on else ("هدف خارجي" if settings.external_target_urls else "نمط موجّه")

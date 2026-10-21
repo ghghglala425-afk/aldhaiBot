@@ -151,6 +151,12 @@ MINIAPP_URL=
 API_BASE_URL=
 # ===== Content Generation =====
 VERIFY_EXEC=0
+# خدمة تنفيذ خارجية معزولة — فارغة = معطّل بلا Docker
+# مثال: EXEC_PROVIDER=judge0 و EXEC_API_URL=https://ce.judge0.com
+EXEC_PROVIDER=
+EXEC_API_URL=
+EXEC_API_KEY=
+EXEC_API_TIMEOUT=20
 GEN_MIN_CODES=6
 GEN_FAST_CODES=4
 GEN_FAST_MIN_CHARS=2800

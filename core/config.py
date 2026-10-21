@@ -138,6 +138,11 @@ class Settings(BaseSettings):
     VERIFY_EXEC: bool = True
     # الأمان: لا يوجد أي تنفيذ على مضيف الخادم. الأكواد تُشغَّل داخل Docker فقط؛
     # عند غياب Docker تُصنَّف "متخطى". (أُزيل SANDBOX_LOCAL نهائيا.)
+    # خدمة تنفيذ خارجية معزولة: piston (خادم Piston) أو judge0 (Judge0 CE).
+    EXEC_PROVIDER: str = ""
+    EXEC_API_URL: str = ""
+    EXEC_API_KEY: str = ""
+    EXEC_API_TIMEOUT: int = 20
     VERIFY_CODE_CONCURRENCY: int = 4
     SANDBOX_MEM_MB: int = 256
     SANDBOX_CPUS: str = "0.5"

@@ -192,16 +192,16 @@ async def audit_seed() -> dict:
 
     info["demo_quiz"] = (quiz, questions)
 
-    # تشغيل أكواد الدرس التجريبي — داخل Docker فقط، ولا شيء على المضيف
-    from pipeline.sandbox_runner import _RUN, docker_available, run_code
+    # تشغيل أكواد الدرس التجريبي — داخل Docker أو خدمة خارجية فقط
+    from pipeline.sandbox_runner import _RUN, available_languages, run_code
 
-    docker_ok = await docker_available()
-    if not docker_ok:
+    sandbox_langs = await available_languages()
+    if not sandbox_langs:
         warn(
-            "Docker غير متاح — تم تخطي تنفيذ الأكواد تماما. "
+            "لا Docker ولا خدمة تنفيذ خارجية — تم تخطي تنفيذ الأكواد تماما. "
             "هذا الفحص لا يشغّل أي كود على جهازك."
         )
-    for c in (info["demo_codes"] if docker_ok else []):
+    for c in (info["demo_codes"] if sandbox_langs else []):
         if (c.language or "").lower() not in _RUN:
             fail(f"كود {c.id}: لغة {c.language!r} غير مدعومة في المنفّذ")
             continue
@@ -328,12 +328,12 @@ async def audit_journey(info: dict) -> None:
         cert = await maybe_certificate(s, user, stage.course_id) if stage else None
         check(cert is not None and bool(cert.code), "لم تُصدر شهادة بعد إكمال الكورس التجريبي")
 
-        # تمرين الكود: تشغيل الحل المرجعي داخل Docker ومطابقته لنفسه
+        # تمرين الكود: تشغيل الحل المرجعي في بيئة معزولة ومطابقته لنفسه
         from app.handlers.exercise import _is_correct, _norm, _pick_reference
-        from pipeline.sandbox_runner import docker_available, run_code
+        from pipeline.sandbox_runner import available_languages, run_code
 
         ref = await _pick_reference(s, demo.id)
-        if check(ref is not None, "لا يوجد كود مرجعي للتمرين") and await docker_available():
+        if check(ref is not None, "لا يوجد كود مرجعي للتمرين") and await available_languages():
             probe = await run_code(ref.language, ref.code, exec_enabled=True, timeout=10)
             if probe.status == "ok":
                 text = _norm(probe.stdout)

@@ -81,7 +81,7 @@ async def _start(message, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) ->
         await tg.send_text(
             message,
             "⚠️ بيئة التنفيذ المعزولة غير متاحة على الخادم الآن "
-            "(شغّل Docker). التنفيذ على مضيف الخادم ممنوع نهائيا. يمكنك مراجعة الحل فقط.",
+            "(شغّل Docker أو اضبط EXEC_API_URL). التنفيذ على مضيف الخادم ممنوع نهائيا. يمكنك مراجعة الحل فقط.",
         )
         return
 
@@ -94,7 +94,7 @@ async def _start(message, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) ->
             await tg.send_text(
                 message,
                 "⚠️ بيئة التنفيذ المعزولة غير متاحة على الخادم الآن "
-                "(شغّل Docker). التنفيذ على مضيف الخادم ممنوع نهائيا. يمكنك مراجعة الحل فقط.",
+                "(شغّل Docker أو اضبط EXEC_API_URL). التنفيذ على مضيف الخادم ممنوع نهائيا. يمكنك مراجعة الحل فقط.",
             )
             return
 
