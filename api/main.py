@@ -92,7 +92,12 @@ async def health():
 
 @app.get("/", tags=["system"])
 async def root():
-    return {"name": "Cyber Academy", "docs": "/docs", "health": "/health"}
+    return {
+        "name": "Cyber Academy",
+        "app": "/app",
+        "docs": "/docs",
+        "health": "/health",
+    }
 
 
 if __name__ == "__main__":

@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     # مجلد السجلات الدوّارة (فارغ = stdout فقط)
     LOG_DIR: str = "data/logs"
     MINIAPP_URL: str = ""
+    # عنوان خدمة API (لتمرير /api/* من نطاق البوت). فارغ = اكتشاف تلقائي.
+    API_BASE_URL: str = ""
     # نطاقات مسموح لأدوات اختبار الويب (Repeater/Fuzzer) — فارغ = localhost فقط
     PROXY_ALLOWED_HOSTS: str = "localhost,127.0.0.1"
     PROXY_TIMEOUT: int = 20

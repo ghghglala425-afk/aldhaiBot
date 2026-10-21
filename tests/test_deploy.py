@@ -51,9 +51,14 @@ class TestPlatformDetection:
         from core.config import settings
 
         monkeypatch.setenv("RAILWAY_PUBLIC_DOMAIN", "myapp.up.railway.app")
+        monkeypatch.setattr(settings, "MINIAPP_URL", "")
+        monkeypatch.setattr(settings, "API_BASE_URL", "")
+        monkeypatch.delenv("API_BASE_URL", raising=False)
+        monkeypatch.delenv("RAILWAY_SERVICE_API_URL", raising=False)
         _detect_platform()
         assert settings.WEBHOOK_URL == "https://myapp.up.railway.app"
-        assert settings.MINIAPP_URL == "https://myapp.up.railway.app"
+        # نخدم الصفحة من نطاق البوت نفسه: /app
+        assert settings.MINIAPP_URL == "https://myapp.up.railway.app/app"
 
     def test_non_railway_env_is_ignored(self, monkeypatch) -> None:
         from app.bot import _detect_platform

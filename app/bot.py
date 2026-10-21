@@ -348,6 +348,43 @@ def build_application() -> None | Application:
     return app
 
 
+def _host_of(url: str) -> str:
+    """يستخرج المضيف من رابط (بلا منفذ/مسار)."""
+    from urllib.parse import urlsplit
+
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _detect_api_base(own_host: str, mini_url: str) -> str:
+    """يحدد عنوان خدمة API (التي تخدم /api/* و /app).
+
+    الترتيب: API_BASE_URL → متغيرات Railway المرجعية → نطاق MINIAPP_URL
+    إن كان مختلفا عن نطاق البوت. يعيد "" إن تعذّر الاكتشاف.
+    """
+    explicit = (getattr(settings, "API_BASE_URL", "") or os.environ.get("API_BASE_URL", "")).strip()
+    if explicit:
+        return explicit.rstrip("/")
+
+    mini_host = _host_of(mini_url)
+    for key, value in os.environ.items():
+        if key.startswith("RAILWAY_SERVICE_") and key.endswith("_URL") and value.startswith("http"):
+            host = _host_of(value)
+            if host and host != own_host:
+                return value.rstrip("/")
+
+    if mini_host and mini_host != own_host:
+        parts = mini_url.split("/")
+        return "/".join(parts[:3])
+
+    return ""
+
+
+_api_base = ""
+
+
 def _detect_platform() -> None:
     """تعديل إعدادات المضيف (Railway / PaaS) قبل الإقلاع.
 
@@ -355,6 +392,7 @@ def _detect_platform() -> None:
       - PORT                  → المنفذ الذي يجب الاستماع عليه
       - RAILWAY_PUBLIC_DOMAIN → النطاق العام للخدمة (لـ webhook و Mini App)
     """
+    global _api_base
     port = os.environ.get("PORT", "").strip()
     if port.isdigit():
         settings.WEBHOOK_PORT = int(port)
@@ -364,8 +402,26 @@ def _detect_platform() -> None:
     if domain:
         settings.WEBHOOK_URL = f"https://{domain}"
         settings.WEBHOOK_PATH = settings.WEBHOOK_PATH or "/webhook"
-        settings.MINIAPP_URL = settings.MINIAPP_URL or f"https://{domain}"
         log.info("اكتُشف نطاق Railway: %s", domain)
+
+    # --- Mini App: لا نتركه يشير إلى نطاق لا يخدم الصفحة ---
+    mini = (settings.MINIAPP_URL or "").strip().rstrip("/")
+    own_host = domain or _host_of(settings.WEBHOOK_URL) or _host_of(mini)
+    _api_base = _detect_api_base(own_host, mini)
+
+    mini_host = _host_of(mini)
+    if not mini:
+        if own_host:
+            mini = f"https://{own_host}/app"
+    elif mini_host:
+        # أي نطاق بلا مسار → صفحة التطبيق في /app (البوت أو الـ API)
+        from urllib.parse import urlsplit
+
+        if not urlsplit(mini).path or urlsplit(mini).path == "/":
+            mini = mini + "/app"
+    settings.MINIAPP_URL = mini
+    if mini:
+        log.info("Mini App: %s (API: %s)", mini, _api_base or "غير محدد")
 
     # على Railway نستخدم Polling دائما:
     # الـ proxy ينهي TLS ويعيد التوجيه إلى HTTP، بينما خادم webhook في
@@ -379,7 +435,10 @@ def _detect_platform() -> None:
         settings.BOT_MODE = "polling"
 
 
+
 _health_started = False
+# مرجع الخادم الصحي (للاستخدام في الاختبارات/التشخيص)
+_health_server = None
 
 # حالة مشتركة بين خيط الفحص الصحي وحلقة التطبيق.
 # خيط الفحص الصحي لا يملك حلقة أحداث، فلا يمكنه استعمال محرّك SQLAlchemy.
@@ -443,27 +502,100 @@ def _start_health_server(port: int) -> None:
     class _HealthHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
-        def _reply(self, code: int, body: bytes) -> None:
+        def _send(
+            self,
+            code: int,
+            body: bytes,
+            ctype: str = "application/json; charset=utf-8",
+        ) -> None:
             self.send_response(code)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             try:
                 self.wfile.write(body)
             except OSError:
                 pass
 
-        def do_GET(self) -> None:  # noqa: N802
+        def _reply(self, code: int, body: bytes) -> None:
+            self._send(code, body)
+
+        def _body(self) -> bytes:
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            return self.rfile.read(n) if n > 0 else b""
+
+        def _proxy(self, method: str) -> None:
+            """يمرّر /api/* إلى خدمة API (إن أمكن اكتشاف عنوانها)."""
+            import json as _json
+            import urllib.error
+            import urllib.request
+
+            if not _api_base:
+                self._send(
+                    503,
+                    _json.dumps(
+                        {
+                            "error": "api_not_configured",
+                            "message": (
+                                "لم يُعثر على خدمة API. اضبط MINIAPP_URL على نطاق خدمة "
+                                "الـ API أو أضف API_BASE_URL في متغيرات Railway."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    ).encode(),
+                )
+                return
+            headers = {}
+            for name in ("Authorization", "Content-Type", "Accept", "User-Agent"):
+                value = self.headers.get(name)
+                if value:
+                    headers[name] = value
+            req = urllib.request.Request(
+                _api_base + self.path,
+                data=self._body(),
+                method=method,
+                headers=headers,
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=45) as resp:
+                    data = resp.read()
+                    ctype = resp.headers.get("Content-Type") or "application/json"
+                    self._send(resp.status, data, ctype)
+            except urllib.error.HTTPError as e:
+                data = e.read()
+                ctype = e.headers.get("Content-Type") or "application/json"
+                self._send(e.code, data, ctype)
+            except Exception as e:  # noqa: BLE001
+                self._send(
+                    502,
+                    _json.dumps(
+                        {"error": "api_unreachable", "message": str(e)[:300]},
+                        ensure_ascii=False,
+                    ).encode(),
+                )
+
+        def _handle(self, method: str) -> None:
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
-            if path in ("/health", "/healthz"):
+            if method == "GET" and path in ("/", "/app", "/app/index.html"):
+                # نخدم صفحة التطبيق من نطاق البوت — لا مزيد من {"error":"not found"}
+                from api.routers.miniapp import PAGE
+
+                self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            elif path.startswith("/api/"):
+                self._proxy(method)
+            elif method == "GET" and path in ("/health", "/healthz"):
                 # 200 حتى أثناء التهيئة — Railway يطلب خدمة سليمة لا خدمة مكتملة
                 ready = bool(_db_state["ready"])
                 body = (
                     '{"status":"ok","service":"%s","ready":%s}'
                     % (state["role"], "true" if ready else "false")
                 ).encode()
-                self._reply(200, body)
-            elif path == "/diag":
+                self._send(200, body)
+            elif method == "GET" and path == "/diag":
                 # تشخيص كامل: قاعدة البيانات، AI، إعدادات — عبر المتصفح
                 import json as _json
 
@@ -483,14 +615,39 @@ def _start_health_server(port: int) -> None:
                     "bot_username": _token_state["username"],
                     "admins": settings.admin_ids,
                     "admins_configured": bool(settings.admin_ids),
+                    "miniapp_url": settings.MINIAPP_URL,
+                    "api_base": _api_base,
                     "updates_received": _live_stats["updates"],
                     "last_update": _live_stats["last_update"],
                     "errors": settings.check_required(),
                     "warnings": settings.check_warnings(),
                 }
-                self._reply(200, _json.dumps(payload, ensure_ascii=False).encode())
+                self._send(200, _json.dumps(payload, ensure_ascii=False).encode())
             else:
-                self._reply(404, b'{"error":"not found"}')
+                self._send(404, b'{"error":"not found"}')
+
+        def do_GET(self) -> None:  # noqa: N802
+            self._handle("GET")
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._handle("POST")
+
+        def do_PUT(self) -> None:  # noqa: N802
+            self._handle("PUT")
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            self._handle("PATCH")
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._handle("DELETE")
+
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def log_message(self, *args) -> None:  # noqa: D102
             return
@@ -499,8 +656,9 @@ def _start_health_server(port: int) -> None:
         server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        global _health_started
+        global _health_started, _health_server
         _health_started = True
+        _health_server = server
         log.info("خادم الفحص الصحي يعمل على المنفذ %s", port)
     except OSError as e:
         log.warning("تعذّر تشغيل خادم الفحص الصحي على %s: %s", port, e)
