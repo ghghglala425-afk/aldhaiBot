@@ -14,7 +14,8 @@ from core.config import settings
 from core.db import SessionLocal
 from core.logging import get_logger
 from core.models import Course, Language, Lesson, Stage
-from pipeline.taxonomy import iter_language_lessons, language_course_slug, language_icon
+from pipeline.outline import outline_language_slug
+from pipeline.taxonomy import language_course_slug, language_icon
 from app import tg
 
 log = get_logger("bot.languages")
@@ -67,11 +68,25 @@ async def languages_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def language_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     await q.answer()
-    slug = q.data.split(":", 1)[1]
+    await _render_language(q, q.data.split(":", 1)[1])
+
+
+async def _render_language(q, slug: str) -> None:
+    """يعرض صفحة اللغة، ويبني مخططها محليا وفورا إن لم يكن موجودا (بلا AI)."""
     course_slug = language_course_slug(slug)
     async with SessionLocal() as s:
         lang = await s.scalar(select(Language).where(Language.slug == slug))
+        if not lang:
+            await tg.edit_text(q, "اللغة غير موجودة.")
+            return
         course = await s.scalar(select(Course).where(Course.slug == course_slug))
+        if not course:
+            try:
+                await outline_language_slug(s, slug, use_ai=False)
+            except Exception as e:  # noqa: BLE001
+                log.warning("تعذّر بناء مخطط %s محليا: %s", slug, e)
+                await s.rollback()
+            course = await s.scalar(select(Course).where(Course.slug == course_slug))
         stages = []
         counts: dict[int, dict] = {}
         if course:
@@ -86,9 +101,6 @@ async def language_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                     "total": len(rows),
                     "ready": sum(1 for r in rows if r.status in {"published", "verified"}),
                 }
-    if not lang:
-        await tg.edit_text(q, "اللغة غير موجودة.")
-        return
     name_ar = lang.name_ar or lang.name
     icon = language_icon(lang.slug, lang.paradigm)
     built = bool(course and counts)
@@ -115,7 +127,7 @@ async def language_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         lines.append(
             "اضغط «🧩 بناء المخطط» لإنشاء الخريطة الكاملة فورا "
-            "(نداء AI واحد).\n<i>متاح لكل المستخدمين — 3 مخططات في الساعة لكل مستخدم.</i>"
+            "(دون أي نداء AI — الدروس تُبنى عند فتحها)."
         )
         rows.append([InlineKeyboardButton("🧩 بناء المخطط", callback_data=f"langbuild:{slug}")])
     rows.append([InlineKeyboardButton("⬅️ كل اللغات", callback_data="langs:0")])
@@ -186,25 +198,17 @@ async def stage_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def language_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بناء مخطط اللغة — متاح لكل المستخدمين بلا حدود زمنية."""
+    """يبني مخطط اللغة محليا وفورا (بلا AI)، ثم يعرض صفحتها."""
     q = update.callback_query
     slug = q.data.split(":", 1)[1]
-    if not settings.ai_configured:
-        await q.answer("AI غير مضبوط — لا يمكن بناء المخطط.", show_alert=True)
-        return
-
-    from pipeline import jobs
-
+    await q.answer("⏳ أبني المخطط الآن…")
     async with SessionLocal() as s:
-        if await jobs.outline_exists(s, slug):
-            await q.answer("✅ المخطط مبني بالفعل — افتح المرحلة.", show_alert=True)
-            return
-        if await jobs.outline_in_progress(s, slug):
-            await q.answer("⏳ المخطط قيد البناء بالفعل.", show_alert=True)
-            return
-        job = await jobs.enqueue_outline(s, slug)
-    await q.answer("أُدرج بناء المخطط في الطابور ✅", show_alert=True)
-    log.info("طلب بناء مخطط %s (job=%s)", slug, job.id if job else None)
+        try:
+            await outline_language_slug(s, slug, use_ai=False)
+        except Exception as e:  # noqa: BLE001
+            log.warning("تعذّر بناء مخطط %s: %s", slug, e)
+            await s.rollback()
+    await _render_language(q, slug)
 
 
 async def language_warm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -108,6 +108,11 @@ async def _start(message, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) ->
         body += f"<i>{esc(hint[:500])}</i>\n"
     if expected:
         body += f"\n<b>الخرج المتوقع:</b>\n<pre>{esc(expected[:1200])}</pre>\n"
+    else:
+        body += (
+            "\n⚠️ <i>تعذّر استخراج الخرج المرجعي لهذا المثال، لذا سيكون التقييم "
+            "«كود يعمل بلا أخطاء ويطبع خرجاً» بدلا من مطابقة نصية.</i>\n"
+        )
     body += (
         "\nأرسل الكود الآن في رسالة (بلا شرح). "
         "أو اضغط «🛑 إنهاء» للخروج."
@@ -191,7 +196,11 @@ async def submit_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     expected = st.get("expected") or ""
     actual = _norm(res.stdout)
-    passed = _is_correct(expected, actual)
+    if expected:
+        passed = _is_correct(expected, actual)
+    else:
+        # لا خرج مرجعي متاح: التقييم بنجاح التشغيل ووجود خرج فعلي.
+        passed = res.status == "ok" and bool(actual.strip())
 
     if res.status == "skipped":
         context.user_data.pop("exercise", None)
@@ -234,6 +243,10 @@ async def submit_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         body += f"ملاحظة: {esc(res.detail)}\n"
     if expected:
         body += f"\n<b>المتوقع:</b>\n<pre>{esc(expected[:900])}</pre>"
+    else:
+        body += (
+            "\n<i>لا يوجد خرج مرجعي — تأكد أن الكود يعمل بلا أخطاء ويطبع خرجاً.</i>\n"
+        )
     if actual:
         body += f"\n<b>خرجك:</b>\n<pre>{esc(actual[:900])}</pre>"
     if res.stderr:

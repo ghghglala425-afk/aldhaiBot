@@ -101,8 +101,8 @@ class TestOutlineGuards:
     def test_build_checks_existing_outline(self) -> None:
         src = _src("languages.py")
         body = src.split("async def language_build")[1].split("async def language_warm")[0]
-        assert "outline_exists" in body
-        assert "outline_in_progress" in body
+        assert "outline_language_slug" in body
+        assert "use_ai=False" in body, "بناء المخطط يجب أن يكون محليا وفوريا بلا AI"
 
     def test_outline_exists_uses_the_right_course_slug(self) -> None:
         from pipeline.jobs import outline_exists
@@ -118,4 +118,5 @@ class TestUserFacingText:
 
     def test_language_view_mentions_the_limit(self) -> None:
         src = _src("languages.py")
-        assert "3 مخططات في الساعة" in src
+        assert "3 مخططات في الساعة" not in src, "النص القديم بحد 3 مخططات/ساعة لم يعد صحيحا"
+        assert "use_ai=False" in src, "فتح اللغة يجب أن يبني المخطط محليا بلا AI"
