@@ -77,8 +77,27 @@ async function api(path, opts={}){
   opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
   if (TOKEN) opts.headers['Authorization'] = 'Bearer ' + TOKEN;
   const r = await fetch(path, opts);
-  if (!r.ok){ throw new Error((await r.json()).detail || 'خطأ'); }
+  if (!r.ok){
+    let body = {};
+    try { body = await r.json(); } catch(e) {}
+    const msg = body.detail || body.message || body.error || 'خطأ';
+    if (body.error === 'api_not_configured' || body.error === 'api_unreachable' || r.status === 503){
+      showConfigBanner(msg);
+    }
+    throw new Error(msg);
+  }
   return r.json();
+}
+function showConfigBanner(msg){
+  let el = document.getElementById('cfg-banner');
+  if (!el){
+    el = document.createElement('div');
+    el.id = 'cfg-banner';
+    el.style.cssText = 'position:sticky;top:0;z-index:9999;background:#5a1f1f;color:#ffd7d7;'
+      + 'padding:10px 14px;font-size:13px;line-height:1.6;border-bottom:1px solid #ff6b6b';
+    document.body.prepend(el);
+  }
+  el.textContent = '⚠️ ' + msg + ' — تحقق من إعداد الخادم.';
 }
 
 async function boot(){

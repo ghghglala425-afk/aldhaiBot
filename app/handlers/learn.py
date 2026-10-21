@@ -130,45 +130,71 @@ async def _send_chunks(message, chunks: list[str]) -> None:
 
 
 async def _send_html_chunks(message, text: str, limit: int = 3800) -> None:
-    """يقسّم نص HTML طويل إلى رسائل آمنة."""
+    """يقسّم نص HTML طويل إلى رسائل آمنة (بلا قطع وسوم إن أمكن)."""
     if not text:
         return
+    async def _emit(part: str) -> None:
+        if part.strip():
+            await message.reply_text(
+                part[:4000], parse_mode=ParseMode.HTML, disable_web_page_preview=True
+            )
+
     buf = ""
     for line in text.splitlines(keepends=True):
+        if len(line) > limit:
+            await _emit(buf)
+            buf = ""
+            rest = line
+            while len(rest) > 4000:
+                cut = rest.rfind("\n", 0, 4000)
+                if cut <= 0:
+                    cut = 4000
+                await _emit(rest[:cut])
+                rest = rest[cut:]
+            buf = rest
+            continue
         if len(buf) + len(line) > limit:
-            await message.reply_text(buf[:limit], parse_mode=ParseMode.HTML,
-                                     disable_web_page_preview=True)
+            await _emit(buf)
             buf = ""
         buf += line
-    if buf.strip():
-        await message.reply_text(buf[:limit], parse_mode=ParseMode.HTML,
-                                 disable_web_page_preview=True)
+    await _emit(buf)
+
+
+
+async def _flush_blocks(message, blocks: list[str]) -> None:
+    """يرسل النصوص المتراكمة في رسائل أقل (حد تيليجرام ~4096)."""
+    if not blocks:
+        return
+    text = "\n\n".join(b for b in blocks if b and b.strip())
+    blocks.clear()
+    if text:
+        await _send_html_chunks(message, text)
 
 
 async def _send_code_blocks(message, codes: list[CodeSample]) -> None:
-    """يعرض الأكواد بترويسة ملوّنة لكل كتلة، مع زر تشغيل مباشر."""
+    """رسالة واحدة لكل كود + صف أزرار تشغيل موحّد (رسائل أقل = فتح أسرع)."""
     total = len(codes)
+    run_row: list[InlineKeyboardButton] = []
     for i, c in enumerate(codes, start=1):
         block = lv.render_code_block(c.code, c.language or "", i, total, c.title)
-        await _send_html_chunks(message, block)
+        tail = ""
         if c.explanation:
-            await message.reply_text(
-                f"💬 <i>{lv.esc(c.explanation)}</i>",
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
+            tail += f"\n\n💬 <i>{lv.esc(c.explanation)}</i>"
         if c.expected_output:
-            await message.reply_text(
-                f"📤 <b>الخرج المتوقع:</b>\n<pre>{lv.esc(c.expected_output)}</pre>",
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+            tail += (
+                "\n\n📤 <b>الخرج المتوقع:</b>\n"
+                f"<pre>{lv.esc(c.expected_output)}</pre>"
             )
+        await _send_html_chunks(message, block + tail)
+        run_row.append(
+            InlineKeyboardButton(f"▶️ كود {i}", callback_data=f"runc:{c.id}")
+        )
+    if run_row:
+        rows = [run_row[i : i + 2] for i in range(0, len(run_row), 2)]
         await message.reply_text(
-            f"▶️ <b>{lv.esc(c.title)}</b> — جرّبه بنفسك:",
+            "▶️ <b>جرّب الأكواد بنفسك:</b>",
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("▶️ شغّل هذا الكود", callback_data=f"runc:{c.id}")]]
-            ),
+            reply_markup=InlineKeyboardMarkup(rows),
         )
 
 
@@ -303,7 +329,7 @@ async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _display_and_build(
-    bot, chat_id: int, lesson_id: int, *, user=None, reply_to=None
+    bot, chat_id: int, lesson_id: int, *, user=None, reply_to=None, notice=None
 ) -> None:
     """يعرض الدرس فورا ثم يبني محتواه أو يحضّر التالي في الخلفية."""
     async with SessionLocal() as s:
@@ -311,7 +337,9 @@ async def _display_and_build(
         if not lesson:
             return
         is_outline = lesson.status == "outline" or not lesson.content_md
-    await _render_lesson(bot, chat_id, lesson_id, reply_to=reply_to, user=user)
+    await _render_lesson(
+        bot, chat_id, lesson_id, reply_to=reply_to, user=user, notice=notice
+    )
     if is_outline:
         if settings.GEN_LAZY_ON_OPEN and settings.ai_configured:
             _spawn(_auto_build_and_push(bot, chat_id, lesson_id))
@@ -338,6 +366,8 @@ async def _render_lesson(
     lesson_no = None
     total_lessons = None
     next_title = ""
+    prev_id = None
+    next_id = None
     lesson = None
 
     if notice:
@@ -375,6 +405,9 @@ async def _render_lesson(
                         nxt = await s.get(Lesson, ids[idx + 1])
                         if nxt:
                             next_title = nxt.title
+                            next_id = ids[idx + 1]
+                    if idx > 0:
+                        prev_id = ids[idx - 1]
                     if user is not None:
                         rows = await status_map(s, user, stage.course_id)
                         done = sum(1 for r in rows if r["status"] == STATUS_PASSED)
@@ -393,10 +426,7 @@ async def _render_lesson(
         day_number=lesson_no,
     )
     objectives = lv.render_objectives(lesson.objectives)
-    await tg.send_text(
-        message, (header + objectives)[:3900],
-        parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-    )
+    pending: list[str] = [(header + objectives)[:3900]]
 
     if is_outline:
         if not settings.ai_configured:
@@ -406,7 +436,7 @@ async def _render_lesson(
                 "🕓 <b>المحتوى قيد البناء الآن</b> — سيصلك الشرح الكامل والأمثلة والأسئلة "
                 "هنا تلقائيا بعد لحظات (بلا حاجة لأي زر)."
             )
-        await tg.send_text(message, note, parse_mode=ParseMode.HTML)
+        pending.append(note)
 
     # ---------- المحتوى ----------
     if lesson.content_md:
@@ -415,25 +445,26 @@ async def _render_lesson(
             if not body.strip():
                 continue
             chunk = lv.render_section(title, lv.md_to_tg(body), index=i)
-            await _send_html_chunks(message, chunk)
+            pending.append(chunk)
 
     # ---------- نقاط المفتاح ----------
     key_points = lv.render_key_points(lesson.key_points or [])
     if key_points:
-        await tg.send_text(message, key_points[:3900], parse_mode=ParseMode.HTML)
+        pending.append(key_points[:3900])
 
     # ---------- خطّاف الذاكرة ----------
     hook = lv.render_memory_hook(lesson.memory_hook or "")
     if hook:
-        await tg.send_text(message, hook[:3900], parse_mode=ParseMode.HTML)
+        pending.append(hook[:3900])
 
     # ---------- للتوسّع أكثر ----------
     extra = lv.render_further_reading(getattr(lesson, "further_reading", None))
     if extra:
-        await tg.send_text(message, extra[:3900], parse_mode=ParseMode.HTML)
+        pending.append(extra[:3900])
 
     # ---------- الأكواد ----------
     if codes:
+        await _flush_blocks(message, pending)
         await _send_code_blocks(message, codes)
 
     # ---------- التنبيهات ----------
@@ -446,7 +477,7 @@ async def _render_lesson(
     sec_notes = list(dict.fromkeys(sec_notes))[:6]
     warn = lv.render_warnings(gotchas, sec_notes)
     if warn:
-        await tg.send_text(message, warn[:3900], parse_mode=ParseMode.HTML)
+        pending.append(warn[:3900])
 
     # ---------- بطاقة المراجعة ----------
     review = lv.render_review_card(
@@ -456,12 +487,24 @@ async def _render_lesson(
         next_step=next_title,
     )
     if review:
-        await tg.send_text(message, review[:3900], parse_mode=ParseMode.HTML)
+        pending.append(review[:3900])
 
+    await _flush_blocks(message, pending)
     await _send_assets(message, assets)
 
     # ---------- الأزرار ----------
     buttons: list[list[InlineKeyboardButton]] = []
+    nav_row: list[InlineKeyboardButton] = []
+    if prev_id:
+        nav_row.append(
+            InlineKeyboardButton("⬅️ السابق", callback_data=f"lesson:{prev_id}")
+        )
+    if next_id:
+        nav_row.append(
+            InlineKeyboardButton("التالي ➡️", callback_data=f"lesson:{next_id}")
+        )
+    if nav_row:
+        buttons.append(nav_row)
     if is_outline:
         buttons.append(
             [
@@ -928,20 +971,16 @@ async def _after_quiz_pass(update: Update, context: ContextTypes.DEFAULT_TYPE, l
         nxt = await next_lesson_id(s, lesson)
         nxt_lesson = await s.get(Lesson, nxt) if nxt else None
         nxt_day = await lesson_day(s, nxt_lesson) if nxt_lesson else None
+        user = await _user(s, update.effective_user.id) if update.effective_user else None
     if nxt and nxt_lesson:
-        is_outline = nxt_lesson.status == "outline" or not nxt_lesson.content_md
-        await _render_lesson(
-            context.bot, chat_id, nxt,
+        # _display_and_build يتولى العرض + البناء/التحضير المسبق في الخلفية.
+        await _display_and_build(
+            context.bot, chat_id, nxt, user=user,
             notice=(
                 "✅ <b>أُنجز الدرس!</b> فتحنا لك الدرس التالي تلقائيا.\n"
                 f"📅 اليوم {nxt_day or ''} — {lv.esc(nxt_lesson.title)}"
             ),
         )
-        if is_outline:
-            if settings.GEN_LAZY_ON_OPEN and settings.ai_configured:
-                _spawn(_auto_build_and_push(context.bot, chat_id, nxt))
-        else:
-            _spawn(_prefetch_next(nxt))
     else:
         await tg.send_text(
             update.effective_message,

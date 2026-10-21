@@ -296,6 +296,33 @@ class TestModelFailover:
             )
         assert calls == ["gemini-2.5-flash-lite"]
 
+    def test_transient_error_retried_once(self, monkeypatch) -> None:
+        import asyncio
+
+        from pipeline import providers as p
+
+        calls: list[str] = []
+
+        async def fake_call(spec, system, user, **kwargs):
+            calls.append(spec.model)
+            if len(calls) == 1:
+                raise p.ProviderError(f"{spec.name}: HTTP 503 service unavailable")
+            return "recovered", 2
+
+        async def no_discovery(spec):
+            return []
+
+        monkeypatch.setattr(p, "_call_one", fake_call)
+        monkeypatch.setattr(p, "_discover_models", no_discovery)
+        text, tokens = asyncio.run(
+            p._call_with_fallback(
+                self._spec(p), "s", "u",
+                temperature=0.0, max_tokens=None, mode="none",
+            )
+        )
+        assert (text, tokens) == ("recovered", 2)
+        assert len(calls) == 2
+
     def test_all_models_fail_reports_names(self, monkeypatch) -> None:
         import asyncio
 

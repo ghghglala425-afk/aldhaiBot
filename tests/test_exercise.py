@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app import lesson_view as lv
-from app.handlers.exercise import _norm, _strip_fence
+from app.handlers.exercise import _is_correct, _norm, _strip_fence
 
 
 class TestCodeNormalization:
@@ -18,6 +18,24 @@ class TestCodeNormalization:
 
     def test_plain_code_unchanged(self) -> None:
         assert _strip_fence("print(1)") == "print(1)"
+
+
+class TestCorrectness:
+    def test_exact_match(self) -> None:
+        assert _is_correct("42", "42")
+
+    def test_ignores_trailing_whitespace(self) -> None:
+        assert _is_correct("a\nb", "a\nb  \n")
+
+    def test_ignores_case(self) -> None:
+        assert _is_correct("Hello", "hello")
+
+    def test_empty_expected_never_passes(self) -> None:
+        assert not _is_correct("", "")
+
+    def test_different_output_fails(self) -> None:
+        assert not _is_correct("42", "41")
+
 
 
 class TestDayNumber:
@@ -46,3 +64,14 @@ class TestExerciseWiring:
         assert "latt:" in src
         assert "exs:" in src
         assert "ملحقات الدرس" in src
+
+    def test_lessons_have_prev_next_navigation(self) -> None:
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parents[1] / "app" / "handlers" / "learn.py").read_text(
+            encoding="utf-8"
+        )
+        assert "السابق" in src
+        assert "التالي" in src
+        assert 'callback_data=f"lesson:{prev_id}"' in src
+        assert 'callback_data=f"lesson:{next_id}"' in src

@@ -440,7 +440,7 @@ async def _call_one(
     return _parse_gemini(data) if spec.native else _parse_openai(data)
 
 
-async def _call_with_fallback(
+async def _call_chain(
     spec: ProviderSpec, system: str, user: str, *, temperature: float,
     max_tokens: int | None, mode: str, timeout: float | None = None,
 ) -> tuple[str, int]:
@@ -483,6 +483,46 @@ async def _call_with_fallback(
     raise ProviderError(
         "كل أسماء الموديلات مرفوضة: " + " | ".join(errors[-3:] or ["لا يوجد بديل"])
     )
+
+
+_TRANSIENT_HINTS = (
+    "http 5",
+    "temporarily",
+    "timeout",
+    "timed out",
+    "connect",
+    "reset",
+    "unavailable",
+)
+
+
+def _is_transient(err: BaseException) -> bool:
+    low = str(err).lower()
+    return any(hint in low for hint in _TRANSIENT_HINTS)
+
+
+async def _call_with_fallback(
+    spec: ProviderSpec, system: str, user: str, *, temperature: float,
+    max_tokens: int | None, mode: str, timeout: float | None = None,
+) -> tuple[str, int]:
+    """يغلّف سلسلة الموديلات بإعادة محاولة واحدة للأعطال المؤقتة (5xx/شبكة)."""
+    import asyncio
+
+    for attempt in range(2):
+        try:
+            return await _call_chain(
+                spec, system, user, temperature=temperature,
+                max_tokens=max_tokens, mode=mode, timeout=timeout,
+            )
+        except QuotaExhausted:
+            raise
+        except ProviderError as e:
+            if attempt == 0 and _is_transient(e):
+                log.warning("عطل مؤقت من %s — إعادة المحاولة بعد 1.5s", spec.name)
+                await asyncio.sleep(1.5)
+                continue
+            raise
+    raise ProviderError(f"{spec.name}: فشل بعد إعادة المحاولة")
 
 
 async def complete(

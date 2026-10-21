@@ -47,6 +47,15 @@ def _strip_fence(code: str) -> str:
     return text.strip("\n")
 
 
+def _is_correct(expected: str, actual: str) -> bool:
+    """مقارنة متسامحة: تتجاهل الفراغات الطرفية وحالة الأحرف."""
+    if not expected:
+        return False
+    if actual.strip() == expected.strip():
+        return True
+    return actual.strip().lower() == expected.strip().lower()
+
+
 async def _pick_reference(session, lesson_id: int) -> CodeSample | None:
     return await session.scalar(
         select(CodeSample)
@@ -84,6 +93,7 @@ async def _start(message, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) ->
         "expected": expected,
         "ref_code": code.code,
         "ref_title": code.title,
+        "hint": (code.explanation or "")[:600],
         "attempts": 0,
         "started": time.monotonic(),
     }
@@ -181,7 +191,7 @@ async def submit_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     expected = st.get("expected") or ""
     actual = _norm(res.stdout)
-    passed = bool(expected) and actual == expected
+    passed = _is_correct(expected, actual)
 
     if res.status == "skipped":
         context.user_data.pop("exercise", None)
@@ -229,6 +239,9 @@ async def submit_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if res.stderr:
         body += f"\n<b>أخطاء:</b>\n<pre>{esc(res.stderr[:900])}</pre>"
     body += "\n<i>عدّل الكود وأرسله مرة أخرى، أو اضغط «👀 أظهر الحل».</i>"
+    if st.get("hint") and st["attempts"] >= 2:
+        body += f"\n<b>💡 تلميح:</b> {esc(st['hint'][:400])}"
+    body += f"\n<b>🔁 المحاولة:</b> {st['attempts']}/{MAX_ATTEMPTS}"
     lesson_id = st["lesson_id"]
     await msg.edit_text(
         body[:3900],

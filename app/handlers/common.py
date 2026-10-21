@@ -72,6 +72,18 @@ def ai_error_text(err: Exception | str | None) -> str:
     """رسالة عربية واضحة لمشاكل مزوّد الذكاء الاصطناعي (بدل صمت أو خطأ غامض)."""
     text = str(err or "")
     low = text.lower()
+    model_dead = (
+        "no longer available" in low
+        or "كل أسماء الموديلات" in text
+        or "invalid model" in low
+        or ("gemini" in low and ("404" in text or "not supported" in low))
+    )
+    if model_dead:
+        return (
+            "موديل Gemini المحدد لم يعد متاحاً (تقاعد من Google).\n"
+            "حدّث GEMINI_MODEL إلى gemini-3.5-flash-lite، أو اترك "
+            "GEMINI_AUTODETECT=1 ليختار البوت موديلاً متاحاً تلقائياً، ثم أعد النشر."
+        )
     if "مفتاح غير صالح" in text or "401" in text or "unauthenticated" in low or "api key not valid" in low:
         return (
             "مفتاح الذكاء الاصطناعي غير صالح أو منتهٍ.\n"
