@@ -31,6 +31,8 @@ log = get_logger("core.db")
 
 # مسار SQLite الاحتياطي (يُستعمل على Railway Volume أو محليا)
 SQLITE_FALLBACK = "sqlite+aiosqlite:///./data/app.db"
+# رابط مقصود فاشل: يُستعمل في الإنتاج بدل SQLite عند غياب إعداد صحيح.
+MISSING_DB_URL = "postgresql+asyncpg://invalid:invalid@127.0.0.1:1/missing"
 
 # كم مرة نحاول الاتصال قبل إعطاء الأمل
 CONNECT_ATTEMPTS = 6
@@ -90,22 +92,30 @@ def is_misconfigured() -> bool:
     return _FALLBACK_IS_MISCONFIG
 
 
-def choose_database_url(raw: str | None) -> tuple[str, str]:
+def choose_database_url(
+    raw: str | None, *, allow_fallback: bool = True
+) -> tuple[str, str]:
     """يقرّر رابط قاعدة البيانات النهائي ويعيد (الرابط، سبب الاختيار).
 
     دوال خالصة — بلا حالة عامة — حتى يسهل اختبارها.
+    `allow_fallback=False` (الإنتاج): لا تحويل صامت إلى SQLite إطلاقا.
     """
     value = (raw or "").strip()
     if not value:
-        return SQLITE_FALLBACK, "unset"
+        return (SQLITE_FALLBACK, "unset") if allow_fallback else (MISSING_DB_URL, "unset")
     if _has_unresolved_reference(value):
-        return SQLITE_FALLBACK, "unresolved-reference"
+        if allow_fallback:
+            return SQLITE_FALLBACK, "unresolved-reference"
+        return MISSING_DB_URL, "unresolved-reference"
     normalized = normalize_db_url(value)
     if _is_sqlite(normalized):
         return normalized, "sqlite"
     host = _url_host(normalized)
     if host and not _is_private_service_host(host) and not _host_resolvable(host):
-        return SQLITE_FALLBACK, f"unresolvable-host:{host}"
+        if allow_fallback:
+            return SQLITE_FALLBACK, f"unresolvable-host:{host}"
+        # يبقى PostgreSQL: إعادة المحاولة أفضل من الكتابة في قاعدة محلية مؤقتة.
+        return normalized, f"unresolvable-host:{host}"
     return normalized, "postgres"
 
 
@@ -113,18 +123,33 @@ def resolve_database_url() -> str:
     """يقرّر رابط قاعدة البيانات الفعلي حسب بيئة التشغيل."""
     global _FALLBACK_REASON, _FALLBACK_IS_MISCONFIG
 
-    url, reason = choose_database_url(os.environ.get("DATABASE_URL"))
+    allow = settings.ALLOW_SQLITE_FALLBACK
+    url, reason = choose_database_url(
+        os.environ.get("DATABASE_URL"), allow_fallback=allow
+    )
 
     if reason == "sqlite":
         _FALLBACK_REASON = None
         _FALLBACK_IS_MISCONFIG = False
         return url
+    if reason == "postgres":
+        _FALLBACK_REASON = None
+        _FALLBACK_IS_MISCONFIG = False
+        return url
 
-    # كل ما عداه سقوط إلى SQLite
     _FALLBACK_REASON = reason
     _FALLBACK_IS_MISCONFIG = reason in {"unset", "unresolved-reference"} or reason.startswith(
         "unresolvable-host"
     )
+
+    if not allow:
+        _FALLBACK_REASON = f"disabled:{reason}"
+        log.error(
+            "إعداد قاعدة البيانات غير صالح (%s) و ALLOW_SQLITE_FALLBACK=0 — "
+            "لن يُستعمل SQLite. اضبط DATABASE_URL في Railway Variables.",
+            reason,
+        )
+        return url
 
     if reason == "unset":
         log.warning(
@@ -241,6 +266,35 @@ SessionLocal = _SessionMakerProxy(
 )
 
 
+async def _ensure_indexes(conn) -> None:
+    """فهارس الاستعلامات الساخنة (آمنة ومتكررة) — تُسرّع التصفّح مع آلاف الدروس."""
+    from sqlalchemy import text
+
+    statements = (
+        "CREATE INDEX IF NOT EXISTS ix_stages_course_id ON stages (course_id)",
+        "CREATE INDEX IF NOT EXISTS ix_lessons_stage_id ON lessons (stage_id)",
+        "CREATE INDEX IF NOT EXISTS ix_lessons_status ON lessons (status)",
+        "CREATE INDEX IF NOT EXISTS ix_lessons_language_status "
+        "ON lessons (language_slug, status)",
+        "CREATE INDEX IF NOT EXISTS ix_questions_quiz_id ON questions (quiz_id)",
+        "CREATE INDEX IF NOT EXISTS ix_options_question_id ON options (question_id)",
+        "CREATE INDEX IF NOT EXISTS ix_attempts_user_quiz ON attempts (user_id, quiz_id)",
+        "CREATE INDEX IF NOT EXISTS ix_answers_attempt_id ON answers (attempt_id)",
+        "CREATE INDEX IF NOT EXISTS ix_lesson_assets_lesson_id "
+        "ON lesson_assets (lesson_id)",
+        "CREATE INDEX IF NOT EXISTS ix_code_samples_lesson_id "
+        "ON code_samples (lesson_id)",
+        "CREATE INDEX IF NOT EXISTS ix_generation_jobs_status_created "
+        "ON generation_jobs (status, created_at)",
+    )
+    for sql in statements:
+        try:
+            await conn.execute(text(sql))
+        except Exception as e:  # noqa: BLE001
+            # جدول قديم/غائب لا يجب أن يمنع الإقلاع.
+            log.warning("تعذّر إنشاء فهرس (%s): %s", sql.split(" ON ")[0], e)
+
+
 async def _connect_with_retry() -> None:
     """يتصل بالقاعدة مع إعادة محاولة (الخدمة قد لا تكون جاهزة بعد الإقلاع)."""
     last: Exception | None = None
@@ -250,6 +304,7 @@ async def _connect_with_retry() -> None:
                 await conn.run_sync(Base.metadata.create_all)
                 # توسيع الجداول الموجودة بأعمدة ناقصة (لا يفعلها create_all)
                 await _apply_column_migrations(conn)
+                await _ensure_indexes(conn)
             log.info("تمت تهيئة قاعدة البيانات.")
             return
         except (OperationalError, DBAPIError) as e:
@@ -363,7 +418,7 @@ async def init_db() -> None:
         await _connect_with_retry()
         return
     except Exception as e:  # noqa: BLE001
-        if _is_sqlite(_DATABASE_URL):
+        if _is_sqlite(_DATABASE_URL) or not settings.ALLOW_SQLITE_FALLBACK:
             raise
         # خطأ DNS/شبكة غالبا = إعداد خاطئ للمضيف
         await _fallback_to_sqlite(str(e))

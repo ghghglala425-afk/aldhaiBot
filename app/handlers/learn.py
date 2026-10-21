@@ -665,8 +665,9 @@ async def _auto_build_and_push(bot, chat_id: int, lesson_id: int) -> None:
     except Exception as e:  # noqa: BLE001
         log.warning("تعذّر إدراج توليد احتياطي: %s", e)
     problem = res.get("error") or "انتهت المهلة"
+    heading = "⏳ <b>الخدمة مزدحمة قليلا</b>" if res.get("busy") else "⚠️ <b>تعذّر تجهيز الدرس الآن</b>"
     text = (
-        "⚠️ <b>تعذّر تجهيز الدرس الآن</b>\n"
+        f"{heading}\n"
         f"{ai_error_text(problem)}\n\n"
         "<i>أُدرج الدرس في قائمة التوليد التلقائي — سيصلك تلقائيا عند اكتماله.</i>"
     )

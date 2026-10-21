@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     # auto | json_object | json_schema | none  — «auto» يجرّب الأنسب ثم يتراجع تدريجيا
     AI_JSON_MODE: str = "auto"
     AI_MAX_RETRIES: int = 3
+    # سقف النداءات المتزامنة لمزوّد AI (يمنع 429 عند تزامن 50 مستخدما).
+    AI_MAX_CONCURRENT: int = 6
 
     # ===== طبقة المزوّدين المجانيين (تسبق AI_BASE_URL عند تفعيل AI_FREE_MODE) =====
     # ترتيب المحاولة (مفصول بفاصلة): gemini,groq,openrouter
@@ -94,6 +96,8 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: int = 30
     # تدوير الاتصالات كل 30 دقيقة (الـ proxy يقطع الاتصالات الخاملة)
     DB_POOL_RECYCLE: int = 1800
+    # في الإنتاج: 0 = لا تحويل صامت إلى SQLite عند تعذّر PostgreSQL (يمنع فقدان البيانات).
+    ALLOW_SQLITE_FALLBACK: bool = True
 
     @field_validator("DATABASE_URL")
     @classmethod
@@ -118,6 +122,8 @@ class Settings(BaseSettings):
     MINIAPP_URL: str = ""
     # عنوان خدمة API (لتمرير /api/* من نطاق البوت). فارغ = اكتشاف تلقائي.
     API_BASE_URL: str = ""
+    # رمز حماية /diag. فارغ = /diag معطّل في الإنتاج (404).
+    DIAG_TOKEN: str = ""
     # نطاقات مسموح لأدوات اختبار الويب (Repeater/Fuzzer) — فارغ = localhost فقط
     PROXY_ALLOWED_HOSTS: str = "localhost,127.0.0.1"
     PROXY_TIMEOUT: int = 20
@@ -143,6 +149,10 @@ class Settings(BaseSettings):
     EXEC_API_URL: str = ""
     EXEC_API_KEY: str = ""
     EXEC_API_TIMEOUT: int = 20
+    # طابور التنفيذ: يمنع إغراق المزوّد الخارجي المجاني (429).
+    EXEC_MAX_CONCURRENT: int = 2
+    EXEC_QUEUE_MAX: int = 20
+    EXEC_BREAKER_SECONDS: int = 60
     VERIFY_CODE_CONCURRENCY: int = 4
     SANDBOX_MEM_MB: int = 256
     SANDBOX_CPUS: str = "0.5"
@@ -174,6 +184,9 @@ class Settings(BaseSettings):
     GEN_LESSON_TIMEOUT: int = 1800
     # سقف مهام الطابور (queued+running). 0 = بلا سقف. يحمي الحصة المجانية من الإغراق.
     GEN_QUEUE_MAX: int = 400
+    # سقف التوليد الفوري عند فتح درس (لا يتجاوز عامل الخلفية).
+    GEN_NOW_CONCURRENCY: int = 2
+    GEN_NOW_MAX_WAITING: int = 8
 
     # بيئات الهدف: روابط خارجية بديلة عن الحاويات المحلية. صيغة: slug=url,slug=url
     TARGET_EXTERNAL_URLS: str = ""

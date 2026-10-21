@@ -4,7 +4,7 @@ uvicorn[standard]>=0.30
 python-multipart>=0.0.9
 
 # ===== Telegram Bot =====
-python-telegram-bot[job-queue,webhooks]>=21.6
+python-telegram-bot[job-queue,webhooks,rate-limiter]>=21.6
 
 # ===== Database (async) =====
 sqlalchemy[asyncio]>=2.0.30

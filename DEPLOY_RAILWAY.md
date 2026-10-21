@@ -185,12 +185,26 @@ GET https://<your-service>.up.railway.app/health
 | `EXEC_API_URL` | `https://ce.judge0.com` | Judge0 CE مجاني بلا مفتاح — يفعّل التمارين بلا Docker |
 | `EXEC_API_KEY` | *(فارغ)* | `X-Auth-Token` لـJudge0 أو `Bearer` لـPiston |
 | `EXEC_API_TIMEOUT` | `20` | مهلة طلب التنفيذ (ثانية) |
+| `EXEC_MAX_CONCURRENT` | `2` | سقف التنفيذ المتزامن (يمنع 429) |
+| `EXEC_QUEUE_MAX` | `20` | أقصى طلبات منتظرة قبل الرفض السريع |
+| `EXEC_BREAKER_SECONDS` | `60` | مدة إيقاف التنفيذ مؤقتا بعد أعطال متكررة |
+| `AI_MAX_CONCURRENT` | `6` | سقف نداءات AI المتزامنة |
+| `GEN_NOW_CONCURRENCY` | `2` | توليد فوري متزامن عند فتح درس |
+| `GEN_NOW_MAX_WAITING` | `8` | أقصى منتظرين للتوليد الفوري قبل الرسالة «مزدحم» |
+| `GEN_WORKER_CONCURRENCY` | `2` | عامل توليد الخلفية (لا ترفعه فوق طاقة المزوّد) |
+| `GEN_PREBUILD_ON_OPEN` | `0` | ⭐ لا تبنِ 200 درس فور فتح اللغة — التوليد عند الطلب أوفر للحصة |
+| `GEN_LAZY_ON_OPEN` | `1` | توليد الدرس عند فتحه |
+| `ALLOW_SQLITE_FALLBACK` | `0` | ⭐ يمنع التحويل الصامت إلى SQLite وفقدان البيانات |
+| `DIAG_TOKEN` | `‏<سلسلة عشوائية طويلة>` | حماية `/diag` — فارغ = معطّل في الإنتاج |
 | `DB_POOL_SIZE` | `5` | اتصالات دائمة لكل خدمة |
 | `DB_MAX_OVERFLOW` | `5` | اتصال إضافي عند الذروة |
-| `LOG_LEVEL` | `INFO` | |
-| `ENV` | `prod` | ⚠️ يفرض `SECRET_KEY` قويا |
 
 > 🔐 **كل الأسرار تُخزَّن مشفّرة** في Railway. لا تضعها في الكود ولا في GitHub.
+
+> 👥 **إعداد موصى به لعشرات المستخدمين:** `ALLOW_SQLITE_FALLBACK=0`، `DIAG_TOKEN`
+> عشوائي، `GEN_PREBUILD_ON_OPEN=0`، `GEN_WORKER_CONCURRENCY=2`،
+> `EXEC_MAX_CONCURRENT=2`، `AI_MAX_CONCURRENT=6`. هذه القيم تمنع الازدحام
+> واستهلاك الحصة المجانية دفعة واحدة، وتُبقي البوت مستجيبا.
 
 > 🌱 **البيانات الأساسية تُزرع تلقائيا** عند أول إقلاع (48 لغة + كورس تجريبي + 8 شارات + 3 مسارات).
 > لا حاجة لأي أمر يدوي. الزرع آمن للتكرار ولا يكرّر البيانات.
@@ -334,7 +348,14 @@ railway logs
 
 # حالة
 railway status
+
+# نسخة احتياطية من قاعدة البيانات (قبل أي ترحيل/تعديل)
+railway run pg_dump "$DATABASE_URL" -Fc -f backup_$(date +%F).dump
 ```
+
+> 📦 **خذ نسخة احتياطية قبل التحديثات الكبيرة.** إن لم يتوفر `pg_dump` محليا،
+> استخدم Railway CLI (`railway link` ثم `railway run ...`) أو فعّل نسخا احتياطيا
+> دوريا من لوحة Postgres. ملف SQLite المحلي ليس نسخة من بيانات الإنتاج.
 
 ---
 

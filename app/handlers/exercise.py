@@ -188,6 +188,10 @@ async def submit_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if text.strip() in MENU_TEXTS:
         return
+    from app import ratelimit
+
+    if not await ratelimit.guard(update, "exercise"):
+        return
     st["attempts"] = int(st.get("attempts") or 0) + 1
     if st["attempts"] > MAX_ATTEMPTS:
         context.user_data.pop("exercise", None)

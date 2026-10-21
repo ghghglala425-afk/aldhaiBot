@@ -24,6 +24,19 @@ log = get_logger("pipeline.ai")
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
+_AI_SEM: asyncio.Semaphore | None = None
+_AI_SEM_LOOP: int | None = None
+
+
+def _ai_sem() -> asyncio.Semaphore:
+    """سقف عالمي للنداءات المتزامنة (يُنشأ داخل الحلقة الحالية)."""
+    global _AI_SEM, _AI_SEM_LOOP
+    loop_id = id(asyncio.get_running_loop())
+    if _AI_SEM is None or _AI_SEM_LOOP != loop_id:
+        _AI_SEM = asyncio.Semaphore(max(1, settings.AI_MAX_CONCURRENT))
+        _AI_SEM_LOOP = loop_id
+    return _AI_SEM
+
 
 class AIError(RuntimeError):
     pass
@@ -132,6 +145,29 @@ async def _post(payload: dict, *, timeout: float | None = None) -> str:
 
 
 async def _generate(
+    system: str,
+    user: str,
+    *,
+    temperature: float,
+    model: str,
+    max_tokens: int | None,
+    mode: str,
+    timeout: float | None = None,
+) -> str:
+    """ينفّذ نداء واحدا ضمن سقف التزامن العالمي."""
+    async with _ai_sem():
+        return await _generate_once(
+            system,
+            user,
+            temperature=temperature,
+            model=model,
+            max_tokens=max_tokens,
+            mode=mode,
+            timeout=timeout,
+        )
+
+
+async def _generate_once(
     system: str,
     user: str,
     *,

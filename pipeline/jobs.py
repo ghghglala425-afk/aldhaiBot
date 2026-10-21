@@ -37,6 +37,20 @@ _stop = asyncio.Event()
 _worker_task: asyncio.Task | None = None
 _background_tasks: set[asyncio.Task] = set()
 
+# سقف التوليد الفوري (فتح درس) — منفصل عن عامل الخلفية.
+_now_sem: asyncio.Semaphore | None = None
+_now_sem_loop: int | None = None
+_now_waiting = 0
+
+
+def _gen_now_sem() -> asyncio.Semaphore:
+    global _now_sem, _now_sem_loop
+    loop_id = id(asyncio.get_running_loop())
+    if _now_sem is None or _now_sem_loop != loop_id:
+        _now_sem = asyncio.Semaphore(max(1, settings.GEN_NOW_CONCURRENCY))
+        _now_sem_loop = loop_id
+    return _now_sem
+
 # بعد هذه المدة تُعتبر مهمة running معلّقة (تعطّل/إعادة نشر) ويُعاد توليدها.
 STALE_JOB_SECONDS = 90.0
 
@@ -372,6 +386,38 @@ def _schedule_enrichment(lesson_id: int) -> None:
 
 
 async def generate_lesson_now(
+    lesson_id: int, *, fast: bool = True, timeout: float = 135.0, _force: bool = False
+) -> dict:
+    """يولّد درسا مخططا فورا مع سقف تزامن (يرفض بسرعة عند الازدحام)."""
+    global _now_waiting
+
+    if _force:
+        return await _generate_lesson_now_inner(
+            lesson_id, fast=fast, timeout=timeout, _force=True
+        )
+
+    sem = _gen_now_sem()
+    if _now_waiting >= max(1, settings.GEN_NOW_MAX_WAITING):
+        return {
+            "ok": False,
+            "error": "الخدمة مزدحمة — أُدرج الدرس في الطابور وسيصلك إشعار عند جاهزيته",
+            "busy": True,
+        }
+
+    _now_waiting += 1
+    try:
+        await sem.acquire()
+    finally:
+        _now_waiting -= 1
+    try:
+        return await _generate_lesson_now_inner(
+            lesson_id, fast=fast, timeout=timeout, _force=_force
+        )
+    finally:
+        sem.release()
+
+
+async def _generate_lesson_now_inner(
     lesson_id: int, *, fast: bool = True, timeout: float = 135.0, _force: bool = False
 ) -> dict:
     """يولّد درسا مخططا فورا في مسار الاستدعاء (بلا انتظار العامل).

@@ -12,6 +12,7 @@ import os
 from telegram import BotCommand, Update
 from telegram.error import Conflict, NetworkError, TelegramError
 from telegram.ext import (
+    AIORateLimiter,
     Application,
     ApplicationBuilder,
     ApplicationHandlerStop,
@@ -291,15 +292,16 @@ def build_application() -> None | Application:
             ApplicationBuilder()
             .token(settings.BOT_TOKEN)
             .concurrent_updates(True)
+            .rate_limiter(AIORateLimiter())
             .post_init(post_init)
             .post_shutdown(post_shutdown)
             .build()
         )
     else:
         # polling — مع كاشف تعارض يُبلغ المشرف
-        from telegram import Bot
+        from telegram.ext import ExtBot
 
-        bot = Bot(settings.BOT_TOKEN)
+        bot = ExtBot(settings.BOT_TOKEN, rate_limiter=AIORateLimiter())
         updater = _ConflictAwareUpdater(bot=bot, update_queue=asyncio.Queue())
         app = (
             ApplicationBuilder()
@@ -597,7 +599,26 @@ def _start_health_server(port: int) -> None:
                 self._send(200, body)
             elif method == "GET" and path == "/diag":
                 # تشخيص كامل: قاعدة البيانات، AI، إعدادات — عبر المتصفح
+                # محمي بـ DIAG_TOKEN؛ وفي الإنتاج بلا رمز يكون معطلا (404).
+                import hmac
                 import json as _json
+                from urllib.parse import parse_qs
+
+                diag_token = (settings.DIAG_TOKEN or "").strip()
+                if diag_token:
+                    supplied = self.headers.get("X-Diag-Token") or ""
+                    if not supplied:
+                        supplied = (
+                            parse_qs(self.path.partition("?")[2]).get("token") or [""]
+                        )[0]
+                    if not hmac.compare_digest(
+                        supplied.encode("utf-8"), diag_token.encode("utf-8")
+                    ):
+                        self._send(404, b'{"error":"not found"}')
+                        return
+                elif settings.is_prod:
+                    self._send(404, b'{"error":"not found"}')
+                    return
 
                 payload: dict[str, object] = {
                     "status": "ok",
@@ -615,7 +636,6 @@ def _start_health_server(port: int) -> None:
                     "token_valid": _token_state["valid"] if _token_state["checked"] else None,
                     "token_error": _token_state["error"],
                     "bot_username": _token_state["username"],
-                    "admins": settings.admin_ids,
                     "admins_configured": bool(settings.admin_ids),
                     "miniapp_url": settings.MINIAPP_URL,
                     "api_base": _api_base,

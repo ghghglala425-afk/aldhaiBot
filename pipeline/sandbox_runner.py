@@ -57,8 +57,43 @@ _remote_versions: dict[str, str] | None = None
 _judge0_state: bool | None = None
 _remote_fail_until: float = 0.0
 
+# طابور التنفيذ وقاطع الدائرة (0 = لا انتظار لخدمة معطّلة)
+_EXEC_SEM: asyncio.Semaphore | None = None
+_EXEC_SEM_LOOP: int | None = None
+_EXEC_WAITING = 0
+_EXEC_FAIL_STREAK = 0
+_EXEC_OPEN_UNTIL = 0.0
+
 MAX_STDOUT = 20_000
 MAX_STDERR = 10_000
+_RETRY_DELAY = 1.0
+
+
+def _sem() -> asyncio.Semaphore:
+    global _EXEC_SEM, _EXEC_SEM_LOOP
+    loop_id = id(asyncio.get_running_loop())
+    if _EXEC_SEM is None or _EXEC_SEM_LOOP != loop_id:
+        _EXEC_SEM = asyncio.Semaphore(max(1, settings.EXEC_MAX_CONCURRENT))
+        _EXEC_SEM_LOOP = loop_id
+    return _EXEC_SEM
+
+
+def _reset_exec_state() -> None:
+    """للاختبارات فقط: تصفير الطابور وقاطع الدائرة."""
+    global _EXEC_SEM, _EXEC_SEM_LOOP, _EXEC_WAITING, _EXEC_FAIL_STREAK, _EXEC_OPEN_UNTIL
+    _EXEC_SEM = None
+    _EXEC_SEM_LOOP = None
+    _EXEC_WAITING = 0
+    _EXEC_FAIL_STREAK = 0
+    _EXEC_OPEN_UNTIL = 0.0
+
+
+def _transient(res: RunResult) -> bool:
+    """هل الفشل عابر (ازدحام/شبكة) ويستحق إعادة محاولة؟"""
+    if res.status != "skipped":
+        return False
+    text = res.detail or ""
+    return "(429)" in text or "تعذّر الوصول" in text or "(5" in text
 
 
 def _remote_base() -> str:
@@ -363,14 +398,58 @@ async def _run_judge0(language: str, code: str, timeout: int) -> RunResult:
 async def run_code(
     language: str, code: str, *, timeout: int | None = None, exec_enabled: bool | None = None
 ) -> RunResult:
+    global _EXEC_WAITING, _EXEC_FAIL_STREAK, _EXEC_OPEN_UNTIL
+
     timeout = timeout or settings.SANDBOX_TIMEOUT
     do_exec = settings.VERIFY_EXEC if exec_enabled is None else exec_enabled
     runner = _RUN.get(language)
     if not runner:
         return RunResult(status="skipped", engine="none", detail=f"لا يوجد مُشغّل للغة {language}")
+    if not do_exec:
+        return RunResult(status="skipped", engine="none", detail="التنفيذ معطّل (VERIFY_EXEC=0)")
 
+    if _EXEC_OPEN_UNTIL > time.monotonic():
+        return RunResult(
+            status="skipped", engine="none",
+            detail="خدمة التنفيذ مشغولة الآن — أعد المحاولة بعد قليل",
+        )
+    if _EXEC_WAITING >= max(1, settings.EXEC_QUEUE_MAX):
+        return RunResult(
+            status="skipped", engine="none",
+            detail="طابور التنفيذ ممتلئ الآن — أعد المحاولة بعد لحظات",
+        )
+
+    sem = _sem()
+    _EXEC_WAITING += 1
+    try:
+        await sem.acquire()
+    finally:
+        _EXEC_WAITING -= 1
+    try:
+        res = await _run_once(runner, language, code, timeout)
+        if _transient(res):
+            # محاولة واحدة إضافية بعد مهلة قصيرة (429/5xx/شبكة).
+            await asyncio.sleep(_RETRY_DELAY)
+            res = await _run_once(runner, language, code, timeout)
+        if res.status == "ok" or res.status in {"error", "timeout"}:
+            _EXEC_FAIL_STREAK = 0
+        elif _transient(res):
+            _EXEC_FAIL_STREAK += 1
+            if _EXEC_FAIL_STREAK >= 3:
+                _EXEC_OPEN_UNTIL = time.monotonic() + max(5, settings.EXEC_BREAKER_SECONDS)
+                _EXEC_FAIL_STREAK = 0
+                log.warning("فتح قاطع دائرة التنفيذ لمدة %ss", settings.EXEC_BREAKER_SECONDS)
+        return res
+    finally:
+        sem.release()
+
+
+async def _run_once(
+    runner: dict, language: str, code: str, timeout: int
+) -> RunResult:
+    """محاولة تنفيذ واحدة: خدمة خارجية أولاً ثم Docker (بلا تنفيذ على المضيف)."""
     # الخدمة الخارجية أولا: لا شيء يعمل على مضيف هذا الجهاز/الخادم.
-    if do_exec and await remote_available():
+    if await remote_available():
         if _provider() == "judge0":
             return await _run_judge0(language, code, timeout)
         return await _run_remote(language, code, timeout)
@@ -381,7 +460,7 @@ async def run_code(
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(code)
 
-        if do_exec and await docker_available():
+        if await docker_available():
             image = _IMAGES.get(language)
             if image:
                 cmd = [
@@ -400,8 +479,6 @@ async def run_code(
                     return RunResult("ok", "docker", out, err)
                 return RunResult("error", "docker", out, err, f"خروج بكود {rc}")
 
-        if not do_exec:
-            return RunResult(status="skipped", engine="none", detail="التنفيذ معطّل (VERIFY_EXEC=0)")
         return RunResult(
             status="skipped", engine="none",
             detail=(

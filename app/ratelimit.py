@@ -24,6 +24,7 @@ LIMITS: dict[str, tuple[int, int]] = {
     "search": (30, 300),
     "tools": (20, 300),
     "export": (20, 600),
+    "exercise": (10, 300),
 }
 
 
