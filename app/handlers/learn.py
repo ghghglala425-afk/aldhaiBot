@@ -231,7 +231,7 @@ async def run_code_sample(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if res.stderr:
         body += f"\n<b>الأخطاء:</b>\n<pre>{lv.esc(res.stderr[:1200])}</pre>"
     if res.status == "skipped":
-        body += "\n<i>فعّل SANDBOX_LOCAL=1 أو Docker لتنفيذ الأكواد على الخادم.</i>"
+        body += "\n<i>التنفيذ يتم داخل Docker فقط — التنفيذ على مضيف الخادم ممنوع نهائيا.</i>"
     try:
         await msg.edit_text(body[:3900], parse_mode=ParseMode.HTML)
     except Exception:  # noqa: BLE001

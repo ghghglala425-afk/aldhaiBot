@@ -136,9 +136,8 @@ class Settings(BaseSettings):
     GEN_MAX_REPAIRS: int = 3
     GEN_CONCURRENCY: int = 2
     VERIFY_EXEC: bool = True
-    # تنفيذ الأكواد محليا عند غياب Docker: بيئة نظيفة + حدود موارد + مهلة.
-    # فعّله فقط إذا كنت تقبل تشغيل كود المستخدمين على الخادم (بلا عزل شبكي).
-    SANDBOX_LOCAL: bool = True
+    # الأمان: لا يوجد أي تنفيذ على مضيف الخادم. الأكواد تُشغَّل داخل Docker فقط؛
+    # عند غياب Docker تُصنَّف "متخطى". (أُزيل SANDBOX_LOCAL نهائيا.)
     VERIFY_CODE_CONCURRENCY: int = 4
     SANDBOX_MEM_MB: int = 256
     SANDBOX_CPUS: str = "0.5"

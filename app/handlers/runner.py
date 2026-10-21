@@ -16,9 +16,8 @@ from telegram.ext import (
 )
 
 from app.handlers.common import esc
-from core.config import settings
 from core.logging import get_logger
-from pipeline.sandbox_runner import available_languages, docker_available, run_code
+from pipeline.sandbox_runner import available_languages, run_code
 from app import tg
 
 log = get_logger("bot.runner")
@@ -46,9 +45,8 @@ async def _lang_keyboard(langs: list[str]) -> InlineKeyboardMarkup:
 def _disabled_hint() -> str:
     return (
         "▶️ تنفيذ الأكواد غير متاح حاليا.\n\n"
-        "الحل:\n"
-        "• فعّل SANDBOX_LOCAL=1 في إعدادات الخادم (تنفيذ محلي بحدود موارد وبيئة نظيفة)، أو\n"
-        "• شغّل Docker لتفعيل العزل الكامل."
+        "🔒 الأمان: هذا البوت لا ينفّذ أي كود على مضيف الخادم إطلاقا.\n"
+        "شغّل Docker على الخادم لتفعيل بيئة التنفيذ المعزولة ثم أعد المحاولة."
     )
 
 
@@ -59,14 +57,7 @@ async def run_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     langs = await available_languages()
     if not langs:
-        if not settings.SANDBOX_LOCAL and not await docker_available():
-            await tg.send_text(update.effective_message, _disabled_hint())
-        else:
-            await tg.send_text(
-                update.effective_message,
-                "▶️ لا يوجد مفسّر أكواد مثبّت على الخادم حالياً.\n"
-                "ثبّت Python (أو Docker) ثم أعد المحاولة.",
-            )
+        await tg.send_text(update.effective_message, _disabled_hint())
         return ConversationHandler.END
     context.user_data["run_langs"] = langs
     await tg.send_text(
@@ -135,7 +126,7 @@ async def got_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             body += f"\n<b>الأخطاء:</b>\n<pre>{esc(res.stderr[:1500])}</pre>"
         if res.status == "skipped":
             body += "\n" + esc(_disabled_hint())
-        elif res.status == "ok" and res.engine == "local":
+        elif res.status == "ok":
             body += "\n<i>جرّب تعديل الكود وإعادة تشغيله لتتعلم أكثر.</i>"
     try:
         await msg.edit_text(body[:3900], parse_mode=ParseMode.HTML)

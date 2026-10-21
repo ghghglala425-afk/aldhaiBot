@@ -181,7 +181,6 @@ GET https://<your-service>.up.railway.app/health
 | `ENV` | `prod` | |
 | `LOG_LEVEL` | `INFO` | |
 | `VERIFY_EXEC` | `0` | بلا Docker |
-| `SANDBOX_LOCAL` | `0` | بلا تنفيذ محلي |
 | `DB_POOL_SIZE` | `5` | اتصالات دائمة لكل خدمة |
 | `DB_MAX_OVERFLOW` | `5` | اتصال إضافي عند الذروة |
 | `LOG_LEVEL` | `INFO` | |

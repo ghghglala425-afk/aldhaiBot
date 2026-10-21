@@ -68,7 +68,6 @@ if ($LASTEXITCODE -ne 0) {
 $env:DISABLE_SQLALCHEMY_CEXT = "1"
 if (-not $env:DATABASE_URL) { $env:DATABASE_URL = $DatabaseUrl }
 if (-not $env:VERIFY_EXEC) { $env:VERIFY_EXEC = "0" }
-if (-not $env:SANDBOX_LOCAL) { $env:SANDBOX_LOCAL = "0" }
 Write-Host "[i] DATABASE_URL=$env:DATABASE_URL  VERIFY_EXEC=$env:VERIFY_EXEC"
 
 # 5) البيانات الأساسية (اللغات والكورسات والمسارات)

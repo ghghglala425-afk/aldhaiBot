@@ -84,7 +84,7 @@ async def _start(message, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) ->
             await tg.send_text(
                 message,
                 "⚠️ بيئة التنفيذ المعزولة غير متاحة على الخادم الآن "
-                "(فعّل Docker أو SANDBOX_LOCAL=1). يمكنك مراجعة الحل فقط.",
+                "(شغّل Docker). التنفيذ على مضيف الخادم ممنوع نهائيا. يمكنك مراجعة الحل فقط.",
             )
 
     context.user_data["exercise"] = {

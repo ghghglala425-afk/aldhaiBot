@@ -31,7 +31,6 @@ if ($pyParts.Length -gt 1) { $pyArgs = $pyParts[1..($pyParts.Length - 1)] }
 $env:DISABLE_SQLALCHEMY_CEXT = "1"
 if (-not $env:DATABASE_URL) { $env:DATABASE_URL = $DatabaseUrl }
 if (-not $env:VERIFY_EXEC) { $env:VERIFY_EXEC = "0" }
-if (-not $env:SANDBOX_LOCAL) { $env:SANDBOX_LOCAL = "0" }
 if (-not $env:PYTHONIOENCODING) { $env:PYTHONIOENCODING = "utf-8" }
 if (-not $env:PYTHONUNBUFFERED) { $env:PYTHONUNBUFFERED = "1" }
 

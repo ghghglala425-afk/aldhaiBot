@@ -163,12 +163,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     from pipeline.providers import usage_snapshot
 
     docker_on = await docker_available()
-    if docker_on:
-        exec_mode = "Docker + محلي" if settings.SANDBOX_LOCAL else "Docker فقط"
-    elif settings.SANDBOX_LOCAL:
-        exec_mode = "محلي (بيئة نظيفة + حدود موارد)"
-    else:
-        exec_mode = "معطّل (فعّل SANDBOX_LOCAL=1 أو شغّل Docker)"
+    exec_mode = "Docker فقط (معزول)" if docker_on else "معطّل — التنفيذ على المضيف ممنوع"
 
     db = "SQLite" if settings.is_sqlite else "PostgreSQL"
     targets = "هدف خارجي/حاويات" if docker_on else ("هدف خارجي" if settings.external_target_urls else "نمط موجّه")

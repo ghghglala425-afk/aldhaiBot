@@ -93,10 +93,8 @@ async def main() -> None:
     await init_db()
     if await docker_available():
         log.info("التحقق بالتنفيذ عبر Docker مفعّل.")
-    elif settings.SANDBOX_LOCAL:
-        log.warning("Docker غير متاح — تنفيذ محلي غير معزول (SANDBOX_LOCAL=1).")
     else:
-        log.warning("Docker غير متاح والتنفيذ المحلي مغلق (SANDBOX_LOCAL=0) — تحقق نحوي فقط.")
+        log.warning("Docker غير متاح — لن يُنفَّذ أي كود (التنفيذ على المضيف ممنوع)؛ تحقق نحوي فقط.")
 
     if args.no_exec:
         settings.VERIFY_EXEC = False

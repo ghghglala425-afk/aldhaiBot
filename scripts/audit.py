@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""فحص ذاتي شامل للبوت والمحتوى (يعمل بلا شبكة وبلا AI).
+"""فحص ذاتي شامل للبوت والمحتوى (بلا شبكة وبلا AI).
+
+**لا ينفّذ أي كود على جهازك:** أي فحص لتشغيل الأكواد يتم داخل Docker فقط؛
+وإن غاب Docker يُتخطّى التنفيذ بالكامل مع تحذير.
 
 يشغّل قاعدة بيانات SQLite مؤقتة، يبذرها، ثم يفحص:
   1) كل اللغات (48) وكل الدروس (200/لغة) في المخطط.
@@ -189,10 +192,16 @@ async def audit_seed() -> dict:
 
     info["demo_quiz"] = (quiz, questions)
 
-    # تشغيل كل أكواد الدرس التجريبي محليا
-    from pipeline.sandbox_runner import _RUN, run_code
+    # تشغيل أكواد الدرس التجريبي — داخل Docker فقط، ولا شيء على المضيف
+    from pipeline.sandbox_runner import _RUN, docker_available, run_code
 
-    for c in info["demo_codes"]:
+    docker_ok = await docker_available()
+    if not docker_ok:
+        warn(
+            "Docker غير متاح — تم تخطي تنفيذ الأكواد تماما. "
+            "هذا الفحص لا يشغّل أي كود على جهازك."
+        )
+    for c in (info["demo_codes"] if docker_ok else []):
         if (c.language or "").lower() not in _RUN:
             fail(f"كود {c.id}: لغة {c.language!r} غير مدعومة في المنفّذ")
             continue
@@ -319,12 +328,12 @@ async def audit_journey(info: dict) -> None:
         cert = await maybe_certificate(s, user, stage.course_id) if stage else None
         check(cert is not None and bool(cert.code), "لم تُصدر شهادة بعد إكمال الكورس التجريبي")
 
-        # تمرين الكود: تشغيل الحل المرجعي ومطابقته لنفسه
+        # تمرين الكود: تشغيل الحل المرجعي داخل Docker ومطابقته لنفسه
         from app.handlers.exercise import _is_correct, _norm, _pick_reference
-        from pipeline.sandbox_runner import run_code
+        from pipeline.sandbox_runner import docker_available, run_code
 
         ref = await _pick_reference(s, demo.id)
-        if check(ref is not None, "لا يوجد كود مرجعي للتمرين"):
+        if check(ref is not None, "لا يوجد كود مرجعي للتمرين") and await docker_available():
             probe = await run_code(ref.language, ref.code, exec_enabled=True, timeout=10)
             if probe.status == "ok":
                 text = _norm(probe.stdout)
@@ -343,7 +352,6 @@ async def run(keep: bool) -> int:
     tmp = Path(tempfile.mkdtemp(prefix="bot_audit_"))
     db = tmp / "audit.db"
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db.as_posix()}"
-    os.environ.setdefault("SANDBOX_LOCAL", "1")
     os.environ["VERIFY_EXEC"] = "0"
     os.environ["AI_API_KEY"] = ""
     os.environ["AI_FREE_MODE"] = "0"
