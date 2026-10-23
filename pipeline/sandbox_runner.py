@@ -337,45 +337,7 @@ async def _run_remote(language: str, code: str, timeout: int) -> RunResult:
     return RunResult("error", "piston", out, err, f"خروج بكود {rc}")
 
 
-async def _run_judge0(language: str, code: str, timeout: int) -> RunResult:
-    """ينفّذ الكود في Judge0 CE خارجي (لا شيء يُنفَّذ على مضيف الخادم)."""
-    base = _remote_base()
-    lang_id = _JUDGE0_IDS.get(language)
-    if not base or not lang_id:
-        return RunResult("skipped", "none", detail=f"اللغة {language} غير متاحة في Judge0")
-
-    payload = {
-        "source_code": _b64(code),
-        "language_id": lang_id,
-        "stdin": "",
-        "cpu_time_limit": max(1, min(timeout, 5)),
-        "wall_time_limit": max(2, min(timeout + 2, 10)),
-        "memory_limit": max(64, settings.SANDBOX_MEM_MB) * 1024,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=settings.EXEC_API_TIMEOUT) as client:
-            resp = await client.post(
-                f"{base}/submissions?base64_encoded=true&wait=true",
-                json=payload, headers=_judge0_headers(),
-            )
-    except Exception as e:  # noqa: BLE001
-        return RunResult("skipped", "none", detail=f"تعذّر الوصول لخدمة Judge0 الخارجية: {e}")
-
-    if resp.status_code == 429:
-        return RunResult(
-            "skipped", "none",
-            detail="خدمة التنفيذ الخارجية مشغولة الآن (429) — أعد المحاولة بعد لحظات",
-        )
-    if resp.status_code >= 400:
-        return RunResult(
-            "skipped", "none",
-            detail=f"خدمة التنفيذ الخارجية رفضت الطلب ({resp.status_code})",
-        )
-    try:
-        data = resp.json()
-    except Exception:  # noqa: BLE001
-        return RunResult("error", "judge0", detail="رد غير صالح من خدمة Judge0")
-
+def _judge0_result(data: dict) -> RunResult:
     status = data.get("status") or {}
     sid = status.get("id")
     out = _unb64(data.get("stdout"))[:MAX_STDOUT]
@@ -392,6 +354,82 @@ async def _run_judge0(language: str, code: str, timeout: int) -> RunResult:
     return RunResult(
         "error", "judge0", out, err,
         f"Judge0: {status.get('description') or 'فشل التنفيذ'}",
+    )
+
+
+async def _run_judge0(language: str, code: str, timeout: int) -> RunResult:
+    """ينفّذ الكود في Judge0 CE خارجي (لا شيء يُنفَّذ على مضيف الخادم).
+
+    الإرسال يتم بلا `wait=true` ثم نستعلم عن النتيجة، لأن الانتظار داخل
+    الطلب نفسه يستهلك الاتصال كله ويسبب `ReadTimeout` عند ازدحام الطابور.
+    """
+    base = _remote_base()
+    lang_id = _JUDGE0_IDS.get(language)
+    if not base or not lang_id:
+        return RunResult("skipped", "none", detail=f"اللغة {language} غير متاحة في Judge0")
+
+    payload = {
+        "source_code": _b64(code),
+        "language_id": lang_id,
+        "stdin": "",
+        "cpu_time_limit": max(1, min(timeout, 5)),
+        "wall_time_limit": max(2, min(timeout + 2, 10)),
+        "memory_limit": max(64, settings.SANDBOX_MEM_MB) * 1024,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=settings.EXEC_API_TIMEOUT) as client:
+            resp = await client.post(
+                f"{base}/submissions?base64_encoded=true",
+                json=payload, headers=_judge0_headers(),
+            )
+            if resp.status_code == 429:
+                return RunResult(
+                    "skipped", "none",
+                    detail="خدمة التنفيذ الخارجية مشغولة الآن (429) — أعد المحاولة بعد لحظات",
+                )
+            if resp.status_code >= 400:
+                return RunResult(
+                    "skipped", "none",
+                    detail=f"خدمة التنفيذ الخارجية رفضت الطلب ({resp.status_code})",
+                )
+            try:
+                data = resp.json()
+            except Exception:  # noqa: BLE001
+                return RunResult("error", "judge0", detail="رد غير صالح من خدمة Judge0")
+
+            token = data.get("token")
+            if not token:
+                return _judge0_result(data)
+
+            deadline = time.monotonic() + max(30, settings.EXEC_API_TIMEOUT)
+            while time.monotonic() < deadline:
+                poll = await client.get(
+                    f"{base}/submissions/{token}?base64_encoded=true",
+                    headers=_judge0_headers(),
+                )
+                if poll.status_code == 429:
+                    await asyncio.sleep(1)
+                    continue
+                if poll.status_code >= 400:
+                    return RunResult(
+                        "skipped", "none",
+                        detail=f"خدمة التنفيذ الخارجية رفضت الطلب ({poll.status_code})",
+                    )
+                try:
+                    data = poll.json()
+                except Exception:  # noqa: BLE001
+                    return RunResult("error", "judge0", detail="رد غير صالح من خدمة Judge0")
+
+                sid = (data.get("status") or {}).get("id")
+                if sid not in (1, 2):
+                    return _judge0_result(data)
+                await asyncio.sleep(1)
+    except Exception as e:  # noqa: BLE001
+        return RunResult("skipped", "none", detail=f"تعذّر الوصول لخدمة Judge0 الخارجية: {e}")
+
+    return RunResult(
+        "timeout", "judge0",
+        detail="انتهت مهلة انتظار خدمة التنفيذ الخارجية",
     )
 
 

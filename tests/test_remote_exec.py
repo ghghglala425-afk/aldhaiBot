@@ -35,6 +35,8 @@ class FakeResponse:
 class FakeClient:
     def __init__(self, *args, **kwargs):
         self.get_response = None
+        self.get_responses = None
+        self._get_index = 0
         self.post_response = None
         self.posted = None
 
@@ -45,6 +47,10 @@ class FakeClient:
         return False
 
     async def get(self, *args, **kwargs):
+        if self.get_responses is not None:
+            index = min(self._get_index, len(self.get_responses) - 1)
+            self._get_index += 1
+            return self.get_responses[index]
         return self.get_response
 
     async def post(self, *args, **kwargs):
@@ -184,10 +190,13 @@ def test_provider_autodetects_judge0() -> None:
             assert sb._provider() == "piston"
 
 
-def _judge0_client(data) -> FakeClient:
+def _judge0_client(data, *, queued: bool = False) -> FakeClient:
     client = FakeClient()
-    client.get_response = FakeResponse(data=[])
-    client.post_response = FakeResponse(data=data)
+    polls = [FakeResponse(data=data)]
+    if queued:
+        polls.insert(0, FakeResponse(data={"status": {"id": 1, "description": "In Queue"}}))
+    client.get_responses = [FakeResponse(data=[]), *polls]
+    client.post_response = FakeResponse(data={"token": "test-token"})
     return client
 
 
@@ -201,7 +210,8 @@ def test_judge0_accepted() -> None:
             "stdout": _b64("4\n"),
             "stderr": None,
             "status": {"id": 3, "description": "Accepted"},
-        }
+        },
+        queued=True,
     )
 
     async def _run():
