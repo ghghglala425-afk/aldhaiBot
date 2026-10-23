@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import time
 from dataclasses import dataclass, field, replace
@@ -31,7 +32,14 @@ class AllProvidersFailed(ProviderError):
 
 
 class QuotaExhausted(ProviderError):
-    """الحصة اليومية للمزوّد (أو الميزانية الإجمالية) نفدت."""
+    """نفاد حصة المزوّد (لا يُعاد المحاولة تلقائيا) — يُجرَّب مزوّد آخر."""
+
+
+# حالة مشتركة بين كل نداءات العملية: التبريد والحد الأقصى للطلبات لكل مفتاح.
+# بدونها يُعاد إنشاء ProviderSpec في كل نداء فتفقد العدّادات معناها.
+_COOLDOWNS: dict[str, float] = {}
+_LAST_CALL: dict[str, float] = {}
+_THROTTLE_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
 
 
 @dataclass
@@ -50,25 +58,37 @@ class ProviderSpec:
 
     @property
     def key_id(self) -> str:
-        return f"{self.name}:{self.api_key[-4:]}" if self.api_key else self.name
+        """معرّف ثابت للمفتاح (يُستخدم في قاعدة البيانات والسجلات)."""
+        if not self.api_key:
+            return self.name
+        tail = self.api_key[-8:] if len(self.api_key) >= 8 else self.api_key
+        return f"{self.name[:12]}:{tail}"
 
     def ready(self) -> bool:
-        return time.monotonic() >= self._cooldown_until
+        until = max(self._cooldown_until, _COOLDOWNS.get(self.key_id, 0.0))
+        return time.monotonic() >= until
 
     def cool(self, seconds: float) -> None:
-        self._cooldown_until = time.monotonic() + max(1.0, seconds)
+        until = time.monotonic() + max(1.0, seconds)
+        self._cooldown_until = until
+        _COOLDOWNS[self.key_id] = until
 
     async def throttle(self) -> None:
-        """يبقي التردد تحت RPM المعلن."""
+        """يحترم الحد الأقصى لطلبات الدقيقة (RPM) لكل مفتاح عبر كل النداءات."""
         if self.rpm <= 0:
             return
-        gap = 60.0 / self.rpm
-        wait = gap - (time.monotonic() - self._last_call)
-        if wait > 0:
-            import asyncio
-
-            await asyncio.sleep(min(wait, 10))
-        self._last_call = time.monotonic()
+        # قفل لكل (حلقة الأحداث، المفتاح) يمنع تجاوز RPM عند الطلبات المتزامنة.
+        lock_key = (id(asyncio.get_running_loop()), self.key_id)
+        lock = _THROTTLE_LOCKS.get(lock_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _THROTTLE_LOCKS[lock_key] = lock
+        async with lock:
+            gap = 60.0 / self.rpm
+            wait = gap - (time.monotonic() - _LAST_CALL.get(self.key_id, 0.0))
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _LAST_CALL[self.key_id] = time.monotonic()
 
 
 # ---------------------------------------------------------------------
@@ -82,14 +102,13 @@ def build_providers(settings_override=None) -> list[ProviderSpec]:
     out: list[ProviderSpec] = []
     for name in s.free_providers:
         if name == "gemini":
-            for key in (s.GEMINI_API_KEY, s.GEMINI_API_KEY_2):
-                if not key:
-                    continue
+            for key in s.gemini_api_keys:
+                key_id = f"gemini:{(key[-8:] if len(key) >= 8 else key)}"
                 out.append(
                     ProviderSpec(
                         name="gemini",
                         base_url="https://generativelanguage.googleapis.com/v1beta",
-                        model=_chosen_model.get(f"gemini:{key[-4:]}", s.GEMINI_MODEL),
+                        model=_chosen_model.get(key_id, s.GEMINI_MODEL),
                         api_key=key,
                         rpm=s.GEMINI_RPM,
                         rpd=s.GEMINI_RPD,
@@ -98,29 +117,43 @@ def build_providers(settings_override=None) -> list[ProviderSpec]:
                     )
                 )
         elif name == "groq":
-            if s.GROQ_API_KEY:
+            for key in s.groq_api_keys:
                 out.append(
                     ProviderSpec(
                         name="groq",
                         base_url="https://api.groq.com/openai/v1",
                         model=s.GROQ_MODEL,
-                        api_key=s.GROQ_API_KEY,
+                        api_key=key,
                         rpm=s.GROQ_RPM,
                         rpd=s.GROQ_RPD,
                         tpd=s.GROQ_TPD,
                     )
                 )
         elif name == "openrouter":
-            if s.OPENROUTER_API_KEY:
+            for key in s.openrouter_api_keys:
                 out.append(
                     ProviderSpec(
                         name="openrouter",
                         base_url="https://openrouter.ai/api/v1",
                         model=s.OPENROUTER_MODEL,
-                        api_key=s.OPENROUTER_API_KEY,
+                        api_key=key,
                         rpm=s.OPENROUTER_RPM,
                         rpd=s.OPENROUTER_RPD,
                         tpd=s.OPENROUTER_TPD,
+                    )
+                )
+        elif name == "extra":
+            for key in s.extra_api_keys:
+                out.append(
+                    ProviderSpec(
+                        name=s.EXTRA_AI_NAME or "extra",
+                        base_url=s.EXTRA_AI_BASE_URL,
+                        model=s.EXTRA_AI_MODEL,
+                        api_key=key,
+                        rpm=s.EXTRA_AI_RPM,
+                        rpd=s.EXTRA_AI_RPD,
+                        tpd=s.EXTRA_AI_TPD,
+                        json_object=s.EXTRA_AI_JSON_OBJECT,
                     )
                 )
     return out
@@ -197,18 +230,21 @@ async def interactive_headroom() -> tuple[int, int]:
             specs = [p for p in build_providers() if p.ready()]
             if not specs:
                 return left_after, 0
-            spec = specs[0]
-            row = await _usage_row(session, spec.name)
-            reqs_left = (spec.rpd - row.requests) if spec.rpd else big
-            tok_left = (spec.tpd - row.tokens) if spec.tpd else big
-            return left_after, min(reqs_left, tok_left)
+            # نأخذ أفضل مفتاح متاح، لا الأول فقط: مفتاح واحد منتهٍ لا يوقف البقية.
+            best = 0
+            for spec in specs:
+                row = await _usage_row(session, spec.key_id)
+                reqs_left = (spec.rpd - row.requests) if spec.rpd else big
+                tok_left = (spec.tpd - row.tokens) if spec.tpd else big
+                best = max(best, min(reqs_left, tok_left))
+            return left_after, best
     except Exception as e:  # noqa: BLE001
         log.debug("تعذّر حساب مساحة التفاعل: %s", e)
         return big, big
 
 
 async def _can_call(session, spec: ProviderSpec) -> bool:
-    row = await _usage_row(session, spec.name)
+    row = await _usage_row(session, spec.key_id)
     if spec.rpd and row.requests >= spec.rpd:
         return False
     if spec.tpd and row.tokens >= spec.tpd:
@@ -220,7 +256,7 @@ async def _can_call(session, spec: ProviderSpec) -> bool:
 
 
 async def _record(session, spec: ProviderSpec, tokens: int, *, error: bool = False) -> None:
-    row = await _usage_row(session, spec.name)
+    row = await _usage_row(session, spec.key_id)
     row.requests = (row.requests or 0) + 1
     row.tokens = (row.tokens or 0) + max(0, tokens)
     if error:
@@ -292,9 +328,21 @@ def _parse_openai(data: dict) -> tuple[str, int]:
 def _retry_after(resp: httpx.Response) -> float:
     raw = resp.headers.get("retry-after") or ""
     try:
-        return float(raw)
-    except ValueError:
-        return 60.0
+        return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        pass
+    # Google يرسل أحيانا RetryInfo.retryDelay في جسم 429 بدلا من الترويسة.
+    try:
+        data = resp.json()
+        error = data.get("error") or {}
+        details = error.get("details") or data.get("details") or []
+        for item in details:
+            delay = str(item.get("retryDelay") or "")
+            if delay.endswith("s"):
+                return max(1.0, min(86400.0, float(delay[:-1])))
+    except Exception:  # noqa: BLE001
+        pass
+    return 60.0
 
 
 # ---------------------------------------------------------------------
@@ -430,13 +478,13 @@ async def _call_one(
                 json=body,
             )
     if resp.status_code in (401, 403):
-        raise ProviderError(f"{spec.name}: مفتاح غير صالح ({resp.status_code})")
+        raise ProviderError(f"{spec.key_id}: مفتاح غير صالح ({resp.status_code})")
     if resp.status_code == 429:
         spec.cool(_retry_after(resp))
         detail = " ".join((resp.text or "").split())[:1200]
-        raise QuotaExhausted(f"{spec.name}: تجاوز الحد (429) {detail}")
+        raise QuotaExhausted(f"{spec.key_id}: تجاوز الحد (429) {detail}")
     if resp.status_code >= 400:
-        raise ProviderError(f"{spec.name}: HTTP {resp.status_code} {resp.text[:180]}")
+        raise ProviderError(f"{spec.key_id}: HTTP {resp.status_code} {resp.text[:180]}")
     data = resp.json()
     return _parse_gemini(data) if spec.native else _parse_openai(data)
 
@@ -519,11 +567,11 @@ async def _call_with_fallback(
             raise
         except ProviderError as e:
             if attempt == 0 and _is_transient(e):
-                log.warning("عطل مؤقت من %s — إعادة المحاولة بعد 1.5s", spec.name)
+                log.warning("عطل مؤقت من %s — إعادة المحاولة بعد 1.5s", spec.key_id)
                 await asyncio.sleep(1.5)
                 continue
             raise
-    raise ProviderError(f"{spec.name}: فشل بعد إعادة المحاولة")
+    raise ProviderError(f"{spec.key_id}: فشل بعد إعادة المحاولة")
 
 
 async def complete(
@@ -545,11 +593,11 @@ async def complete(
     errors: list[str] = []
     for spec in providers:
         if not spec.ready():
-            errors.append(f"{spec.name}: في تبريد")
+            errors.append(f"{spec.key_id}: في تبريد")
             continue
         async with SessionLocal() as session:
             if not await _can_call(session, spec):
-                errors.append(f"{spec.name}: نفدت حصته اليومية")
+                errors.append(f"{spec.key_id}: نفدت حصته اليومية")
                 continue
             try:
                 text, tokens = await _call_with_fallback(
@@ -562,10 +610,10 @@ async def complete(
                 continue
             except Exception as e:  # noqa: BLE001
                 await _record(session, spec, 0, error=True)
-                errors.append(f"{spec.name}: {e}")
+                errors.append(f"{spec.key_id}: {e}")
                 continue
             await _record(session, spec, tokens)
-        log.info("AI عبر %s (%s توكن)", spec.name, tokens)
+        log.info("AI عبر %s (%s توكن)", spec.key_id, tokens)
         return text, spec.name
 
     raise AllProvidersFailed("فشل كل المزوّدين: " + " | ".join(errors[:4]))

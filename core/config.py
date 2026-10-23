@@ -2,11 +2,23 @@
 """إعدادات المشروع — تُقرأ من .env مع تحقق صارم عند الإقلاع."""
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import List
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def split_keys(*values: str) -> List[str]:
+    """يفصل المفاتيح المفصولة بفاصلة/فاصلة منقوطة/مسافة مع إزالة التكرار."""
+    out: List[str] = []
+    for value in values:
+        for item in re.split(r"[\s,;]+", value or ""):
+            item = item.strip()
+            if item and item not in out:
+                out.append(item)
+    return out
 
 
 def normalize_db_url(url: str) -> str:
@@ -53,12 +65,14 @@ class Settings(BaseSettings):
     AI_MAX_CONCURRENT: int = 6
 
     # ===== طبقة المزوّدين المجانيين (تسبق AI_BASE_URL عند تفعيل AI_FREE_MODE) =====
-    # ترتيب المحاولة (مفصول بفاصلة): gemini,groq,openrouter
-    AI_PROVIDER_ORDER: str = "gemini,groq,openrouter"
+    # ترتيب المحاولة (مفصول بفاصلة): gemini,groq,openrouter,extra
+    AI_PROVIDER_ORDER: str = "gemini,groq,openrouter,extra"
     AI_FREE_MODE: bool = False
     # ميزانية يومية إجمالية بالتوكنات (0 = بلا سقف)
     AI_DAILY_TOKEN_BUDGET: int = 2_000_000
     # حدود الطبقة المجانية (عدّلها عند تغيّر سياسات المزوّد)
+    # GEMINI_API_KEYS: مفاتيح متعددة مفصولة بفاصلة (الأفضل لمشاريع منفصلة).
+    GEMINI_API_KEYS: str = ""
     GEMINI_API_KEY: str = ""
     GEMINI_API_KEY_2: str = ""
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
@@ -73,16 +87,27 @@ class Settings(BaseSettings):
     GEMINI_RPM: int = 10
     GEMINI_RPD: int = 1_000
     GEMINI_TPD: int = 2_000_000
+    GROQ_API_KEYS: str = ""
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-120b"
     GROQ_RPM: int = 30
     GROQ_RPD: int = 1_000
     GROQ_TPD: int = 200_000
+    OPENROUTER_API_KEYS: str = ""
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
     OPENROUTER_RPM: int = 20
     OPENROUTER_RPD: int = 50
     OPENROUTER_TPD: int = 0
+    # أي مزوّد مجاني متوافق مع OpenAI (Cerebras / Mistral / GitHub Models ...)
+    EXTRA_AI_NAME: str = "extra"
+    EXTRA_AI_BASE_URL: str = ""
+    EXTRA_AI_MODEL: str = ""
+    EXTRA_AI_API_KEYS: str = ""
+    EXTRA_AI_RPM: int = 20
+    EXTRA_AI_RPD: int = 1_000
+    EXTRA_AI_TPD: int = 0
+    EXTRA_AI_JSON_OBJECT: bool = True
 
     # DB / Cache
     DATABASE_URL: str = "postgresql+asyncpg://cyber:cyber@db:5432/cyberbot"
@@ -225,14 +250,40 @@ class Settings(BaseSettings):
         return self.AI_MODEL_FAST or self.AI_MODEL
 
     @property
+    def gemini_api_keys(self) -> List[str]:
+        return split_keys(self.GEMINI_API_KEYS, self.GEMINI_API_KEY, self.GEMINI_API_KEY_2)
+
+    @property
+    def groq_api_keys(self) -> List[str]:
+        return split_keys(self.GROQ_API_KEYS, self.GROQ_API_KEY)
+
+    @property
+    def openrouter_api_keys(self) -> List[str]:
+        return split_keys(self.OPENROUTER_API_KEYS, self.OPENROUTER_API_KEY)
+
+    @property
+    def extra_api_keys(self) -> List[str]:
+        return split_keys(self.EXTRA_AI_API_KEYS)
+
+    @property
+    def extra_ai_configured(self) -> bool:
+        return bool(
+            self.EXTRA_AI_BASE_URL and self.EXTRA_AI_MODEL and self.extra_api_keys
+        )
+
+    @property
     def free_providers(self) -> List[str]:
         """أسماء المزوّدين المجانيين المضبوطين بالترتيب المطلوب."""
         keys = {
-            "gemini": bool(self.GEMINI_API_KEY or self.GEMINI_API_KEY_2),
-            "groq": bool(self.GROQ_API_KEY),
-            "openrouter": bool(self.OPENROUTER_API_KEY),
+            "gemini": bool(self.gemini_api_keys),
+            "groq": bool(self.groq_api_keys),
+            "openrouter": bool(self.openrouter_api_keys),
+            "extra": self.extra_ai_configured,
         }
         order = [p.strip().lower() for p in (self.AI_PROVIDER_ORDER or "").split(",") if p.strip()]
+        # أي مزوّد إضافي مهيّأ يُضاف تلقائيا حتى لا يبقى معطلا بسبب ترتيب قديم.
+        if keys["extra"] and "extra" not in order:
+            order.append("extra")
         return [p for p in order if keys.get(p)]
 
     @property

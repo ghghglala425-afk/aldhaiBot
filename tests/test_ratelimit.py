@@ -60,7 +60,8 @@ def test_admin_ids_parsing():
 def test_free_mode_off_without_keys():
     from core.config import Settings
 
-    s = Settings(AI_FREE_MODE=True, GEMINI_API_KEY="", GROQ_API_KEY="",
-                 OPENROUTER_API_KEY="", AI_API_KEY="")
+    s = Settings(AI_FREE_MODE=True, GEMINI_API_KEYS="", GEMINI_API_KEY="",
+                 GROQ_API_KEYS="", GROQ_API_KEY="", OPENROUTER_API_KEYS="",
+                 OPENROUTER_API_KEY="", EXTRA_AI_API_KEYS="", AI_API_KEY="")
     assert s.ai_configured is False
     assert s.ai_mode == "off"

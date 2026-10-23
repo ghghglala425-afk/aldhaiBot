@@ -81,6 +81,21 @@ class TestRetryAfter:
         resp.headers = {}
         assert _retry_after(resp) == 60.0
 
+    def test_retry_after_from_google_body(self) -> None:
+        resp = Mock()
+        resp.headers = {}
+        resp.json.return_value = {
+            "error": {
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "10800s",
+                    }
+                ]
+            }
+        }
+        assert _retry_after(resp) == 10800.0
+
 
 class TestPayloads:
     def test_gemini_payload_json_mode(self) -> None:
@@ -118,9 +133,12 @@ class TestProviderOrdering:
 
         s = Settings(
             AI_FREE_MODE=True,
+            GEMINI_API_KEYS="",
             GEMINI_API_KEY="k1",
             GEMINI_API_KEY_2="k2",
+            GROQ_API_KEYS="",
             GROQ_API_KEY="",
+            OPENROUTER_API_KEYS="",
             OPENROUTER_API_KEY="",
             AI_PROVIDER_ORDER="groq,gemini,openrouter",
         )
@@ -134,13 +152,92 @@ class TestProviderOrdering:
 
         s = Settings(
             AI_FREE_MODE=True,
+            GEMINI_API_KEYS="",
             GEMINI_API_KEY="",
+            GROQ_API_KEYS="",
             GROQ_API_KEY="g",
+            OPENROUTER_API_KEYS="",
             OPENROUTER_API_KEY="",
             AI_PROVIDER_ORDER="gemini,groq,openrouter",
         )
         providers = build_providers(s)
         assert [p.name for p in providers] == ["groq"]
+
+    def test_build_providers_many_gemini_keys(self) -> None:
+        from core.config import Settings
+
+        s = Settings(
+            AI_FREE_MODE=True,
+            GEMINI_API_KEYS="k1, k2;k3\nk1",
+            GEMINI_API_KEY="",
+            GEMINI_API_KEY_2="",
+            AI_PROVIDER_ORDER="gemini",
+        )
+        providers = build_providers(s)
+        assert [p.api_key for p in providers] == ["k1", "k2", "k3"]
+        assert len({p.key_id for p in providers}) == 3
+
+    def test_build_providers_extra_openai_compatible(self) -> None:
+        from core.config import Settings
+
+        s = Settings(
+            AI_FREE_MODE=True,
+            GEMINI_API_KEYS="",
+            GEMINI_API_KEY="",
+            GEMINI_API_KEY_2="",
+            GROQ_API_KEYS="",
+            GROQ_API_KEY="",
+            OPENROUTER_API_KEYS="",
+            OPENROUTER_API_KEY="",
+            EXTRA_AI_NAME="cerebras",
+            EXTRA_AI_BASE_URL="https://api.cerebras.ai/v1",
+            EXTRA_AI_MODEL="llama-3.3-70b",
+            EXTRA_AI_API_KEYS="e1,e2",
+            AI_PROVIDER_ORDER="gemini,groq,openrouter,extra",
+        )
+        providers = build_providers(s)
+        assert [p.name for p in providers] == ["cerebras", "cerebras"]
+        assert [p.api_key for p in providers] == ["e1", "e2"]
+        assert providers[0].native is False
+        assert providers[0].base_url == "https://api.cerebras.ai/v1"
+
+
+class TestPerKeyState:
+    def test_usage_is_isolated_per_key(self, monkeypatch) -> None:
+        import asyncio
+        from types import SimpleNamespace
+
+        from pipeline import providers as p
+
+        rows: dict[str, SimpleNamespace] = {}
+
+        async def fake_usage_row(session, provider):
+            return rows.setdefault(
+                provider, SimpleNamespace(requests=0, tokens=0, errors=0)
+            )
+
+        async def no_budget(session):
+            return None
+
+        monkeypatch.setattr(p, "_usage_row", fake_usage_row)
+        monkeypatch.setattr(p, "_budget_left", no_budget)
+
+        a = p.ProviderSpec("gemini", "x", "m", "keyAAAAAA", rpd=1)
+        b = p.ProviderSpec("gemini", "x", "m", "keyBBBBBB", rpd=1)
+        rows[a.key_id] = SimpleNamespace(requests=1, tokens=0, errors=0)
+
+        assert asyncio.run(p._can_call(None, a)) is False
+        assert asyncio.run(p._can_call(None, b)) is True
+
+    def test_cooldown_is_shared_across_specs(self, monkeypatch) -> None:
+        from pipeline import providers as p
+
+        monkeypatch.setattr(p, "_COOLDOWNS", {}, raising=False)
+        a = p.ProviderSpec("gemini", "x", "m", "same-key-123")
+        b = p.ProviderSpec("gemini", "x", "m", "same-key-123")
+        a.cool(60)
+        assert a.ready() is False
+        assert b.ready() is False
 
 
 class TestGeminiPayload:
