@@ -433,7 +433,7 @@ async def _call_one(
         raise ProviderError(f"{spec.name}: مفتاح غير صالح ({resp.status_code})")
     if resp.status_code == 429:
         spec.cool(_retry_after(resp))
-        detail = " ".join((resp.text or "").split())[:240]
+        detail = " ".join((resp.text or "").split())[:1200]
         raise QuotaExhausted(f"{spec.name}: تجاوز الحد (429) {detail}")
     if resp.status_code >= 400:
         raise ProviderError(f"{spec.name}: HTTP {resp.status_code} {resp.text[:180]}")
