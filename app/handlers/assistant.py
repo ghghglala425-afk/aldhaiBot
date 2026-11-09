@@ -95,7 +95,9 @@ _STOPWORDS = {
 
 def _keywords(question: str) -> list[str]:
     """كلمات مفتاحية عربية/إنجليزية للبحث في مكتبة الدروس."""
-    clean = re.sub(r"[^\w\s\u0600-\u06FF]", " ", question or "").lower()
+    # علامات الترقيم العربية داخل نطاق الحروف، لذا تُزال صراحة قبل التقسيم.
+    clean = re.sub(r"[\u060c\u061b\u061f\u066a-\u066d\u06d4]", " ", question or "")
+    clean = re.sub(r"[^\w\s\u0600-\u06FF]", " ", clean).lower()
     out: list[str] = []
     for raw in clean.split():
         word = raw.strip()
@@ -106,27 +108,43 @@ def _keywords(question: str) -> list[str]:
     return out[:6]
 
 
+def _variants(word: str) -> list[str]:
+    """صيغتان للكلمة: كما هي، وبلا «ال» التعريف (بحث عربي بسيط بلا جذور)."""
+    forms = [word]
+    if word.startswith("ال") and len(word) > 4:
+        forms.append(word[2:])
+    return forms
+
+
 async def library_answer(question: str, *, limit: int = 3) -> str | None:
     """بديل محلي: يجيب من محتوى دروس الأكاديمية حين تتوفّر حصص AI.
 
-    يبحث في عنوان الدرس وملخصه ونقاطه ثم يعيد مقتطفات عملية مع أقرب درس.
+    يبحث في عنوان الدرس وملخصه ونقاطه، ثم في متن الدروس المنشورة،
+    ويعيد مقتطفات عملية مع أقرب درس.
     """
     words = _keywords(question)
     if not words:
         return None
-    from sqlalchemy import or_
+    from sqlalchemy import and_, or_
 
     async with SessionLocal() as session:
         conds = []
         for word in words:
-            like = f"%{word}%"
-            conds.extend(
-                [
-                    Lesson.title.ilike(like),
-                    Lesson.summary.ilike(like),
-                    Lesson.slug.ilike(like),
-                ]
-            )
+            for form in _variants(word):
+                like = f"%{form}%"
+                conds.extend(
+                    [
+                        Lesson.title.ilike(like),
+                        Lesson.summary.ilike(like),
+                        Lesson.slug.ilike(like),
+                        # المتن: 78 درسا منشورا فقط، فالبحث فيه رخيص ومفيد
+                        # حين لا يذكر العنوان الموضوع صراحة (مثل «المنفذ 443»).
+                        and_(
+                            Lesson.status == "published",
+                            Lesson.content_md.ilike(like),
+                        ),
+                    ]
+                )
         rows = list(
             (
                 await session.execute(
@@ -150,7 +168,11 @@ async def library_answer(question: str, *, limit: int = 3) -> str | None:
                     " ".join(lesson.key_points or []),
                 ]
             ).lower()
-            return sum(1 for w in words if w in blob)
+            body = (lesson.content_md or "").lower()
+            hits = sum(1 for w in words if any(f in blob for f in _variants(w)))
+            body_hits = sum(1 for w in words if any(f in body for f in _variants(w)))
+            # العنوان/الملخص أهم من مجرد ورود الكلمة في المتن.
+            return hits * 3 + body_hits
 
         rows.sort(key=lambda x: (-score(x), x.order_index or 0))
         picked = rows[: max(1, limit)]
