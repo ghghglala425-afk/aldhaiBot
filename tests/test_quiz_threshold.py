@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
+from sqlalchemy import select
+
 from core.db import SessionLocal, engine, init_db
-from core.learning import STATUS_PASSED, get_progress, submit_quiz
+from core.learning import STATUS_PASSED, get_progress, is_unlocked, submit_quiz
 from core.models import (
     Base,
     Course,
@@ -105,9 +107,12 @@ def test_half_correct_passes_and_unlocks_next() -> None:
             async with SessionLocal() as s:
                 user = await s.get(User, uid)
                 lesson = await s.get(Lesson, lesson_id)
+                nxt = await s.scalar(select(Lesson).where(Lesson.slug == "half-l2"))
+                assert not await is_unlocked(s, user, nxt), "الدرس التالي مفتوح قبل النجاح"
                 result = await submit_quiz(s, user, lesson, answers)
                 prog = await get_progress(s, uid, lesson_id)
                 assert prog is not None and prog.status == STATUS_PASSED
+                assert await is_unlocked(s, user, nxt), "الدرس التالي لم يُفتح بعد النجاح"
                 return result
 
         result = asyncio.run(_go())
@@ -128,5 +133,13 @@ def test_below_half_fails() -> None:
         assert result["ok"] and not result["passed"]
         assert result["score"] == 0
         assert result["threshold"] == 50
+
+        async def _locked() -> bool:
+            async with SessionLocal() as s:
+                user = await s.get(User, _uid)
+                nxt = await s.scalar(select(Lesson).where(Lesson.slug == "half-l2"))
+                return await is_unlocked(s, user, nxt)
+
+        assert asyncio.run(_locked()) is False, "الدرس التالي انفتح رغم الرسوب"
     finally:
         _reset_db()
