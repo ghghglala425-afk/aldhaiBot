@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -207,5 +208,47 @@ def test_passed_today_counts_recent_passes() -> None:
                 return await passed_today(s, ids["uid"])
 
         assert asyncio.run(_go()) == 1
+    finally:
+        _reset_db()
+
+
+class _FakeMessage:
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self.markups: list[object] = []
+
+    async def reply_text(self, text, **kwargs):
+        self.texts.append(text)
+        self.markups.append(kwargs.get("reply_markup"))
+        return None
+
+
+def test_daily_card_uses_selected_track_and_all_features() -> None:
+    _reset_db()
+    try:
+        _seed()
+        from app.handlers.profile import daily
+
+        msg = _FakeMessage()
+        update = SimpleNamespace(
+            effective_user=SimpleNamespace(id=555111),
+            effective_message=msg,
+        )
+        asyncio.run(daily(update, None))
+
+        text = msg.texts[-1]
+        assert "درس اليوم" in text
+        assert "المسار" in text
+        assert "بلا حد أقصى" in text
+        datas = [
+            b.callback_data
+            for row in msg.markups[-1].inline_keyboard
+            for b in row
+        ]
+        assert any(d.startswith("lesson:") for d in datas)
+        assert any(d.startswith("qz_start:") for d in datas)
+        assert any(d.startswith("askl:") for d in datas)
+        assert "dplan:0" in datas
+        assert "dpick" in datas
     finally:
         _reset_db()

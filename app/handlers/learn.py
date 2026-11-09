@@ -799,6 +799,9 @@ def _quiz_done_kb(
         ]
     )
     rows.append(
+        [InlineKeyboardButton("🤖 اسأل عن الدرس", callback_data=f"askl:{lesson_id}")]
+    )
+    rows.append(
         [InlineKeyboardButton("📖 العودة للدرس", callback_data=f"lesson:{lesson_id}")]
     )
     return InlineKeyboardMarkup(rows)
@@ -1169,9 +1172,10 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         [
             [InlineKeyboardButton("🔁 إعادة المحاولة الآن", callback_data=f"qz_start:{lesson_id}")],
             [
+                InlineKeyboardButton("🤖 اسأل المساعد", callback_data=f"askl:{lesson_id}"),
                 InlineKeyboardButton("📖 مراجعة الإجابات", callback_data="qreview"),
-                InlineKeyboardButton("📚 العودة للدرس", callback_data=f"lesson:{lesson_id}"),
             ],
+            [InlineKeyboardButton("📚 العودة للدرس", callback_data=f"lesson:{lesson_id}")],
         ]
     )
     st["submitted"] = True
