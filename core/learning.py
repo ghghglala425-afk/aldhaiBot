@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import gamification as gami
+from core.config import settings
 from core.logging import get_logger
 from core.models import (
     Answer,
@@ -111,17 +112,14 @@ async def start_lesson(session: AsyncSession, user_id: int, lesson_id: int) -> P
     """
     prog = await _ensure(session, user_id, lesson_id)
     now = dt.datetime.now(dt.timezone.utc)
-    changed = False
     if prog.started_at is None:
         prog.started_at = now
-        changed = True
     if prog.status == STATUS_LOCKED:
         prog.status = STATUS_IN_PROGRESS
-        changed = True
-    if changed:
-        prog.updated_at = now
-        await session.commit()
-        await session.refresh(prog)
+    # آخر نشاط = الآن، كي لا يصل تذكير لمستخدم يتابع فعليا.
+    prog.updated_at = now
+    await session.commit()
+    await session.refresh(prog)
     return prog
 
 
@@ -249,7 +247,8 @@ async def submit_quiz(
                        "explanation": q.explanation, "correct_ids": sorted(correct)})
 
     score = round(earned / total * 100) if total else 0
-    passed = score >= (lesson.min_score or 70)
+    threshold = max(0, min(100, int(settings.QUIZ_PASS_PERCENT)))
+    passed = score >= threshold
     attempt.score = score
     attempt.passed = passed
     attempt.finished_at = dt.datetime.now(dt.timezone.utc)
@@ -265,6 +264,8 @@ async def submit_quiz(
         prog.started_at = dt.datetime.now(dt.timezone.utc)
     if passed and not prog.completed_at:
         prog.completed_at = dt.datetime.now(dt.timezone.utc)
+    # آخر نشاط = الآن (يمنع تذكير من أرسل اختباره للتو).
+    prog.updated_at = dt.datetime.now(dt.timezone.utc)
 
     new_badges: list[str] = []
     first_pass = passed and not was_passed
@@ -282,6 +283,7 @@ async def submit_quiz(
 
     return {
         "ok": True, "score": score, "passed": passed, "detail": detail,
+        "threshold": threshold,
         "xp": lesson.xp_reward if first_pass else 0, "badges": new_badges,
         "first_pass": first_pass,
     }

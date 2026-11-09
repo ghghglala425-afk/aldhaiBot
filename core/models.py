@@ -59,6 +59,8 @@ class User(Base):
     last_streak_date: Mapped[Optional[dt.date]] = mapped_column(Date)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     last_seen: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
+    # آخر تذكير دراسي أُرسل لهذا المستخدم (نمنع التكرار قبل مرور 23 ساعة)
+    last_reminder_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
 
     sessions: Mapped[list["Session"]] = relationship(back_populates="user")
     progress: Mapped[list["Progress"]] = relationship(back_populates="user")

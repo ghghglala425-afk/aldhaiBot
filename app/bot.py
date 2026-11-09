@@ -16,6 +16,7 @@ from telegram.ext import (
     Application,
     ApplicationBuilder,
     ApplicationHandlerStop,
+    CommandHandler,
     TypeHandler,
     Updater,
 )
@@ -40,7 +41,7 @@ from app.handlers import (
     targets,
     tools,
 )
-from app.scheduler import setup_jobs
+from app.scheduler import remind_cmd, setup_jobs
 from core.config import settings
 from core.db import close_db, init_db
 from core.logging import get_logger, setup_logging
@@ -118,6 +119,7 @@ COMMANDS = [
     BotCommand("run", "تشغيل كود"),
     BotCommand("tools", "أدوات اختبار الويب"),
     BotCommand("daily", "الدرس اليومي"),
+    BotCommand("remind", "أين توقفت؟ + التذكيرات"),
     BotCommand("hub", "مركز التعلّم والمراجعة"),
     BotCommand("rank", "لوحة الصدارة"),
     BotCommand("me", "حسابي وتقدّمي"),
@@ -345,6 +347,7 @@ def build_application() -> None | Application:
     tools.register_handlers(app)
     study.register_handlers(app)
     admin.register_handlers(app)
+    app.add_handler(CommandHandler("remind", remind_cmd))
 
     app.add_error_handler(on_error)
     return app

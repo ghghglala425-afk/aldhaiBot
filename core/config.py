@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET: str = ""
     ADMIN_IDS: str = ""
 
+    # ===== التعلّم =====
+    # نسبة النجاح المطلوبة في الاختبار (50 = إجابة نصف الأسئلة كافية لفتح التالي)
+    QUIZ_PASS_PERCENT: int = 50
+    # التذكير الدراسي: يُرسل بعد هذا العدد من ساعات الخمول، ويُعاد كل نفس المدة
+    REMINDER_IDLE_HOURS: int = 23
+    # دورية فحص المستخدمين الخاملين (بالدقائق)
+    REMINDER_CHECK_MINUTES: int = 60
+
     # AI (متوافق مع OpenAI؛ يعمل مع LM Studio/Ollama محليا)
     AI_BASE_URL: str = "https://api.openai.com/v1"
     AI_API_KEY: str = ""

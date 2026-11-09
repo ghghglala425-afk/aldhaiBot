@@ -806,6 +806,14 @@ def _html(text: str | None) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _progress_bar(done: int, total: int, width: int = 10) -> str:
+    """شريط تقدّم بصري داخل الاختبار (مثال: ████░░░░░░)."""
+    total = max(1, int(total))
+    done = max(0, min(int(done), total))
+    filled = round(width * done / total)
+    return "█" * filled + "░" * (width - filled)
+
+
 async def _edit_or_send(message, text: str, kb: InlineKeyboardMarkup) -> None:
     """يعدّل الرسالة في مكانها (أسرع بكثير) ويرسل رسالة جديدة عند التعذّر فقط."""
     try:
@@ -842,8 +850,10 @@ async def _render_question(message, context: ContextTypes.DEFAULT_TYPE) -> None:
     is_multi = q.kind == "multi"
     is_ok = bool(chosen) and chosen == correct_ids
 
+    done = len(st.get("revealed", []))
     lines = [
-        f"🧠 <b>سؤال {st['i'] + 1} / {len(qids)}</b>  ·  ✅ {len(st.get('revealed', []))}/{len(qids)}",
+        f"{_progress_bar(done, len(qids))}  <b>{done}/{len(qids)}</b>",
+        f"🧠 <b>سؤال {st['i'] + 1} / {len(qids)}</b> · 🎯 النجاح {settings.QUIZ_PASS_PERCENT}%",
         "",
         _html(q.text),
         "",
@@ -1039,13 +1049,28 @@ async def _after_quiz_pass(
 
     if nxt and nxt_lesson:
         # _display_and_build يتولى العرض + البناء/التحضير المسبق في الخلفية.
-        await _display_and_build(
-            context.bot, chat_id, nxt, user=user_ref,
-            notice=(
-                "✅ <b>أُنجز الدرس!</b> فتحنا لك الدرس التالي تلقائيا.\n"
-                f"📅 اليوم {nxt_day or ''} — {lv.esc(nxt_title)}"
-            ),
-        )
+        try:
+            await _display_and_build(
+                context.bot, chat_id, nxt, user=user_ref,
+                notice=(
+                    "✅ <b>أُنجز الدرس!</b> فتحنا لك الدرس التالي تلقائيا.\n"
+                    f"📅 اليوم {nxt_day or ''} — {lv.esc(nxt_title)}"
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            # لا نترك المستخدم بلا مخرج إن تعذّر العرض لأي سبب.
+            log.warning("تعذّر فتح الدرس التالي #%s تلقائيا: %s", nxt, e)
+            try:
+                await context.bot.send_message(
+                    chat_id,
+                    "✅ <b>أُنجز الدرس!</b> اضغط لفتح الدرس التالي:",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("➡️ الدرس التالي", callback_data=f"lesson:{nxt}")]]
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                pass
     else:
         await tg.send_text(
             update.effective_message,
@@ -1093,7 +1118,7 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await tg.edit_text(q, f"⚠️ {result.get('error')}")
             return
         nxt_id = await next_lesson_id(s, lesson)
-        min_score = lesson.min_score or 70
+        threshold = int(result.get("threshold") or 50)
         streak = user.streak_count or 0
         cert_code = None
         if result.get("passed"):
@@ -1104,9 +1129,14 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 cert = await maybe_certificate(s, user, stage.course_id)
                 cert_code = cert.code if cert else None
 
+    correct_count = sum(1 for d in result.get("detail", []) if d.get("correct"))
+
     if result["passed"]:
         context.user_data.pop("quiz", None)
         lines = [f"🎉 <b>أحسنت! نجحت بنسبة {result['score']}%</b>"]
+        lines.append(
+            f"✅ {correct_count} من {len(qids)} إجابة صحيحة · 🎯 العتبة {threshold}%"
+        )
         if result.get("xp"):
             lines.append(f"⭐ +{result['xp']} نقطة · 🔥 سلسلة {streak} يوم")
         else:
@@ -1126,9 +1156,8 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # ---- فشل: نُبقي الجلسة مفتوحة كي يستطيع المراجعة والإعادة فورا ----
-    correct_count = sum(1 for d in result.get("detail", []) if d.get("correct"))
     lines = [
-        f"😅 <b>لم تجتز هذه المرة</b> — نسبتك {result['score']}% والمطلوب {min_score}%.",
+        f"😅 <b>لم تجتز هذه المرة</b> — نسبتك {result['score']}% والمطلوب {threshold}%.",
         f"✅ أجبت صحيحا عن {correct_count} من {len(qids)} سؤال.",
         "",
         "<i>كل سؤال يعرض الآن الإجابة الصحيحة والتعليل. راجعها ثم أعد المحاولة — بلا حاجة للخروج.</i>",
