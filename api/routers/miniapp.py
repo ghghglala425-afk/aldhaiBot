@@ -84,6 +84,15 @@ async function api(path, opts={}){
     if (body.error === 'api_not_configured' || body.error === 'api_unreachable' || r.status === 503){
       showConfigBanner(msg);
     }
+    if (r.status === 401){
+      // جلسة منتهية أو غير مسجّل: اطلب الدخول بدل إظهار خطأ تقني خام
+      TOKEN = null;
+      try { localStorage.removeItem('token'); } catch(e) {}
+      showLogin('سجّل الدخول للمتابعة.');
+      const err = new Error('سجّل الدخول للمتابعة.');
+      err.handled = true;
+      throw err;
+    }
     throw new Error(msg);
   }
   return r.json();
@@ -120,6 +129,12 @@ function loginForm(){
     <button class="ghost" onclick="doRegister()">إنشاء حساب</button>
     <p class="muted" id="err"></p></div>`;
 }
+
+function showLogin(msg){
+  loginForm();
+  const el = document.getElementById('err');
+  if (el && msg) el.textContent = msg;
+}
 async function doLogin(){
   try{
     const r = await api('/api/auth/login',{method:'POST',body:JSON.stringify({email:$('#email').value,password:$('#pass').value})});
@@ -139,6 +154,8 @@ async function refreshMe(){
 }
 
 async function go(page){
+  const NEED_AUTH = {paths:1, daily:1, profile:1};
+  if (NEED_AUTH[page] && !TOKEN){ showLogin('سجّل الدخول لعرض هذا القسم.'); return; }
   view.innerHTML = '<p class="muted">جار التحميل…</p>';
   try{
     if (page==='courses') return renderCourses();
@@ -146,7 +163,7 @@ async function go(page){
     if (page==='rank') return renderRank();
     if (page==='tools') return renderTools();
     if (page==='profile') return renderProfile();
-  }catch(e){ view.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
+  }catch(e){ if (!e || !e.handled) view.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
 }
 
 async function renderPaths(){
@@ -214,6 +231,7 @@ function codeCard(c, i){
 }
 
 async function renderLessons(slug, title){
+  if (!TOKEN){ showLogin('سجّل الدخول لعرض دروس الكورس.'); return; }
   view.innerHTML = `<h1>${esc(title)}</h1><button class="ghost" onclick="go('courses')">← رجوع</button>`;
   const list = await api(`/api/courses/${slug}/lessons`);
   const icon = {passed:'✅', available:'▶️', locked:'🔒', in_progress:'⏳'};
@@ -228,6 +246,7 @@ async function renderLessons(slug, title){
 }
 
 async function renderLesson(id){
+  if (!TOKEN){ showLogin('سجّل الدخول لفتح الدرس.'); return; }
   view.innerHTML = '<p class="muted">جار التحميل…</p>';
   const l = await api(`/api/lessons/${id}`);
   const quiz = await api(`/api/lessons/${id}/quiz`);
@@ -309,12 +328,12 @@ async function openTarget(labId){
       <button class="ghost" onclick="submitTask(${labId},${x.order})">تسليم</button>
       <span id="tres${labId}_${x.order}" class="muted"></span>`}</div>`).join('');
     box.innerHTML = html;
-  }catch(e){ box.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
+  }catch(e){ if(!e||!e.handled) box.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
 }
 
 async function startTarget(labId){
   try{ await api(`/api/labs/${labId}/target/start`, {method:'POST'}); }
-  catch(e){ alert(e.message); }
+  catch(e){ if(e&&e.handled) return; alert(e.message); }
   openTarget(labId);
 }
 async function stopTarget(labId){
@@ -328,7 +347,7 @@ async function submitTask(labId, order){
     document.getElementById(`tres${labId}_${order}`).textContent = r.correct ? '✅ صحيح' : '❌ غير صحيح';
     await refreshMe();
     if (r.correct) openTarget(labId);
-  }catch(e){ document.getElementById(`tres${labId}_${order}`).textContent = e.message; }
+  }catch(e){ if(e&&e.handled) return; document.getElementById(`tres${labId}_${order}`).textContent = e.message; }
 }
 
 async function submitQuiz(lessonId){
@@ -341,7 +360,7 @@ async function submitQuiz(lessonId){
     const r = await api(`/api/lessons/${lessonId}/attempt`, {method:'POST', body: JSON.stringify({responses})});
     document.getElementById('qres').textContent = (r.passed?'🎉 نجحت ':'😅 رسبت ')+r.score+'%';
     await refreshMe();
-  }catch(e){ document.getElementById('qres').textContent = e.message; }
+  }catch(e){ if(e&&e.handled) return; document.getElementById('qres').textContent = e.message; }
 }
 
 async function submitFlag(labId){
@@ -350,7 +369,7 @@ async function submitFlag(labId){
     const r = await api(`/api/labs/${labId}/submit`, {method:'POST', body: JSON.stringify({flag})});
     document.getElementById('fres'+labId).textContent = r.correct ? '✅ صحيح!' : '❌ غير صحيح';
     await refreshMe();
-  }catch(e){ document.getElementById('fres'+labId).textContent = e.message; }
+  }catch(e){ if(e&&e.handled) return; document.getElementById('fres'+labId).textContent = e.message; }
 }
 
 async function renderRank(){

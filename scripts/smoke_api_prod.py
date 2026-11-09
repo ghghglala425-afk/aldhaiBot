@@ -23,7 +23,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+try:
+    ROOT = Path(__file__).resolve().parents[1]
+except NameError:  # يُشغَّل عبر exec داخل الحاوية
+    ROOT = Path.cwd()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
