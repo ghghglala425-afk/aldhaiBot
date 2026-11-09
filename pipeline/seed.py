@@ -59,6 +59,74 @@ async def seed_languages() -> int:
     return added
 
 
+DEMO_LESSON_CONTENT = """## نظرة عامة
+في هذا الدرس نبني الأساس العملي لأدوات الأمن بلغة بايثون: من تشغيل المفسّر
+وكتابة أول سطر، إلى فهم المتغيرات والدوال، ثم تجزئة كلمات المرور ومحاكاة
+فحص المنافذ محليا.
+
+## ماذا ستتعلم
+- تشغيل بايثون من الطرفية والتحقق من الإصدار.
+- تعريف المتغيرات وكتابة دوال صغيرة قابلة لإعادة الاستخدام.
+- الفرق بين الترميز (encoding) والتجزئة (hashing).
+- محاكاة فحص منافذ على نطاق تختبره أنت فقط.
+
+## بيئة العمل
+```bash
+python3 --version
+```
+إن ظهر إصدار 3.10 أو أحدث فأنت جاهز.
+
+## أول برنامج
+```python
+print("Hello, Security!")
+```
+دالة `print` تكتب نصا في الخرج القياسي؛ هذا أول مكوّن في أي أداة أمنية.
+
+## المتغيرات والدوال
+```python
+def greet(name: str) -> str:
+    return f"مرحبا {name}"
+
+port = 443
+proto = "https"
+print(greet("محلل الأمن"), proto, port)
+```
+الدالة تغلّف منطقا قابلا للتكرار، والمتغيرات تحمل القيم التي تعالجها.
+
+## التجزئة والترميز
+```python
+import hashlib
+
+digest = hashlib.sha256(b"secret").hexdigest()
+print(digest)
+```
+الترميز يحوّل النص إلى بايتات، والتجزئة تنتج بصمة ثابتة الطول لا يمكن عكسها.
+لا تخزّن كلمات المرور كنص صريح؛ خزّن تجزئتها مع ملح (salt) قوي.
+
+## محاكاة فحص المنافذ
+```python
+import socket
+
+def is_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    with socket.socket() as s:
+        s.settimeout(timeout)
+        return s.connect_ex((host, port)) == 0
+
+print(is_open("127.0.0.1", 8000))
+```
+استخدم هذا الفحص على أنظمتك أو على نطاق لديك إذن صريح باختباره فقط.
+
+## تمرين
+1. عدّل الدالة `greet` لتقبل لغة وتعيد التحية بها.
+2. احسب تجزئة SHA-256 لكلمة مرور تجريبية وقارن طول الناتج.
+3. افحص منفذا محليا واطبع النتيجة.
+
+## خلاصة
+أصبحت تعرف كيف تشغّل بايثون، وتعرّف المتغيرات والدوال، وتفهم أساس
+التجزئة، وتملك أول أداة فحص منافذ آمنة. في الدرس التالي سنتعمّق في
+معالجة النصوص والملفات.
+"""
+
 DEMO_LESSON_CODES = [
     ("مرحبا بالعالم", "print('Hello, Security!')", "طباعة نص بسيط — أول برنامج بلغة بايثون."),
     ("المتغيرات", "port = 443\nproto = 'https'\nprint(proto, port)", "تعريف متغيرات وطباعتها."),
@@ -170,7 +238,7 @@ async def seed_demo_course() -> int:
             title="مقدمة: أول خطوة في الأمن",
             summary="تعرّف على بايثون وأدواته الأساسية عبر أمثلة عملية وموسوعة أكواد مشروحة.",
             objectives=["تشغيل بايثون", "المتغيرات والدوال", "تجزئة وترميز", "محاكاة فحص منافذ"],
-            content_md="## نظرة عامة\nفي هذا الدرس نبنى الأساس العملي لأدوات الأمن بلغة بايثون.",
+            content_md=DEMO_LESSON_CONTENT,
             language_slug="python",
             difficulty="beginner",
             est_minutes=25,
@@ -431,6 +499,7 @@ async def main() -> None:
     await seed_target_labs()
     await seed_paths()
     await repair_learning_paths()
+    await repair_demo_lesson()
     log.info("اكتملت البذور.")
 
 
@@ -450,6 +519,26 @@ async def _languages_present() -> bool:
         log.debug("فحصLanguages غير متاح: %s", e)
         return False
     return count is not None
+
+
+async def repair_demo_lesson() -> bool:
+    """يستبدل محتوى الدرس التجريبي القصير بمحتوى كامل (آمن للتكرار)."""
+    async with SessionLocal() as session:
+        lesson = await session.scalar(
+            select(Lesson).where(Lesson.slug == "hello-security")
+        )
+        if not lesson:
+            return False
+        if len((lesson.content_md or "").strip()) >= 200:
+            return False
+        lesson.content_md = DEMO_LESSON_CONTENT
+        if not (lesson.summary or "").strip():
+            lesson.summary = (
+                "تعرّف على بايثون وأدواته الأساسية عبر أمثلة عملية مشروحة."
+            )
+        await session.commit()
+        log.info("حُدّث محتوى الدرس التجريبي hello-security.")
+        return True
 
 
 async def ensure_seeded() -> bool:
@@ -474,6 +563,10 @@ async def ensure_seeded() -> bool:
                 await repair_learning_paths()
             except Exception as e:  # noqa: BLE001
                 log.warning("تعذّر إصلاح المسارات: %s", e)
+            try:
+                await repair_demo_lesson()
+            except Exception as e:  # noqa: BLE001
+                log.warning("تعذّر إصلاح الدرس التجريبي: %s", e)
             log.debug("القاعدة مزروعة بالفعل — تخطّي الزرع.")
             return False
     except Exception as e:  # noqa: BLE001
@@ -502,6 +595,10 @@ async def ensure_seeded() -> bool:
                     await repair_learning_paths()
                 except Exception as e:  # noqa: BLE001
                     log.warning("تعذّر إصلاح المسارات: %s", e)
+                try:
+                    await repair_demo_lesson()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("تعذّر إصلاح الدرس التجريبي: %s", e)
                 log.info("القاعدة مزروعة أثناء الانتظار — تخطّي.")
                 return False
             await main()
