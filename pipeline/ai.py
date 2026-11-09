@@ -87,6 +87,19 @@ def extract_json(text: str) -> Any:
             return json.loads(c)
         except Exception as e:  # noqa: BLE001
             last_err = e
+
+    # مسح تدريجي: بعض الموديلات ترجع كائنين JSON متتاليين أو نصا بينهما،
+    # فيفشل `json.loads` بـ«Extra data». نلتقط أول كائن صالح.
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(raw):
+        if ch not in "{[":
+            continue
+        try:
+            obj, _end = decoder.raw_decode(raw, idx)
+            return obj
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+
     raise ValueError(f"تعذّر تحليل JSON: {last_err}")
 
 

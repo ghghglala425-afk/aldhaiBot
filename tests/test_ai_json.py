@@ -26,6 +26,17 @@ def test_extract_nested_object():
     assert data["stages"][0]["titles"] == ["أ", "ب"]
 
 
+def test_extract_first_of_multiple_objects():
+    """بعض الموديلات ترجع أكثر من كائن JSON — نأخذ الأول بدل الفشل."""
+    text = '{"a": 1, "ok": true}\n\n{"b": 2}'
+    assert extract_json(text) == {"a": 1, "ok": True}
+
+
+def test_extract_object_after_broken_prefix():
+    text = 'ملاحظة {غير صالح} ثم النتيجة: {"answer": 42}'
+    assert extract_json(text) == {"answer": 42}
+
+
 def test_extract_raises_on_garbage():
     try:
         extract_json("لا يوجد جيسون هنا إطلاقا")
