@@ -315,24 +315,38 @@ async def seed_target_labs() -> int:
     return added
 
 
+DEFAULT_PATHS = [
+    {"slug": "web-hacking", "title": "مسار اختراق تطبيقات الويب",
+     "description": "من أساسيات الويب إلى استغلال الثغرات: جافاسكربت، PHP، SQL والدفاع.",
+     "icon": "🕸️", "order": 1,
+     "course_slugs": ["javascript-mastery", "php-mastery", "sql-mastery"]},
+    {"slug": "offensive-python", "title": "مسار بايثون الهجومي",
+     "description": "أتمتة الأمن وكتابة الأدوات بلغة بايثون من الصفر.",
+     "icon": "🐍", "order": 2,
+     "course_slugs": ["python-mastery", "bash-mastery"]},
+    {"slug": "memory-exploitation", "title": "مسار استغلال الذاكرة",
+     "description": "لغة C، تجاوزات المخزن المؤقت، وبناء الشيل كود.",
+     "icon": "⚙️", "order": 3,
+     "course_slugs": ["c-mastery", "python-mastery"]},
+]
+
+# مسارات أُنشئت بمعرّفات كورسات الأمن القديمة (غير موجودة) — نربطها بكورسات الإتقان.
+PATH_COURSE_ALIASES = {
+    "javascript-security": "javascript-mastery",
+    "php-security": "php-mastery",
+    "sql-security": "sql-mastery",
+    "bash-security": "bash-mastery",
+    "c-security": "c-mastery",
+    "python-security": "python-mastery",
+}
+
+
 async def seed_paths() -> int:
     from core.models import LearningPath
 
-    PATHS = [
-        {"slug": "web-hacking", "title": "مسار اختراق تطبيقات الويب",
-         "description": "من أساسيات الويب إلى استغلال الثغرات: جافاسكربت، PHP، SQL والدفاع.",
-         "icon": "🕸️", "order": 1,
-         "course_slugs": ["javascript-security", "php-security", "sql-security"]},
-        {"slug": "offensive-python", "title": "مسار بايثون الهجومي",
-         "description": "أتمتة الأمن وكتابة الأدوات بلغة بايثون من الصفر.",
-         "icon": "🐍", "order": 2, "course_slugs": ["python-security", "bash-security"]},
-        {"slug": "memory-exploitation", "title": "مسار استغلال الذاكرة",
-         "description": "لغة C، تجاوزات المخزن المؤقت، وبناء الشيل كود.",
-         "icon": "⚙️", "order": 3, "course_slugs": ["c-security", "python-security"]},
-    ]
     added = 0
     async with SessionLocal() as session:
-        for spec in PATHS:
+        for spec in DEFAULT_PATHS:
             exists = await session.scalar(select(LearningPath).where(LearningPath.slug == spec["slug"]))
             if exists:
                 continue
@@ -343,6 +357,71 @@ async def seed_paths() -> int:
     return added
 
 
+async def repair_learning_paths(per_stage: int = 20) -> int:
+    """يصلح المسارات القائمة: يربط المعرّفات القديمة وينشئ الكورسات الناقصة.
+
+    آمن للتكرار: لا ينشئ شيئا إن كان موجودا. يُستدعى عند كل إقلاع حتى تُصلح
+    قواعد البيانات القديمة، لكنه رخيص بعد أول مرة.
+    """
+    from core.models import LearningPath
+    from pipeline.outline import build_language_outline
+    from pipeline.taxonomy import language_icon
+
+    changed = 0
+    async with SessionLocal() as session:
+        paths = list((await session.execute(select(LearningPath))).scalars().all())
+        for p in paths:
+            current = list(p.course_slugs or [])
+            mapped: list[str] = []
+            for slug in current:
+                target = PATH_COURSE_ALIASES.get(slug, slug)
+                if target not in mapped:
+                    mapped.append(target)
+            if mapped and mapped != current:
+                p.course_slugs = mapped
+                changed += 1
+        if changed:
+            await session.commit()
+
+        wanted = sorted({s for p in paths for s in (p.course_slugs or [])})
+        existing = set(
+            (await session.execute(select(Course.slug))).scalars().all()
+        )
+        for slug in wanted:
+            if slug in existing:
+                continue
+            if not slug.endswith("-mastery"):
+                log.warning("مسار يشير لكورس غير معروف: %s", slug)
+                continue
+            lang_slug = slug[: -len("-mastery")]
+            lang = await session.scalar(
+                select(Language).where(Language.slug == lang_slug)
+            )
+            if not lang:
+                log.warning("مسار يشير للغة غير مسجّلة: %s", lang_slug)
+                continue
+            try:
+                res = await build_language_outline(
+                    session,
+                    lang.slug,
+                    lang.name_ar or lang.name,
+                    icon=language_icon(lang.slug, lang.paradigm),
+                    use_ai=False,
+                    per_stage=per_stage,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("تعذّر إنشاء كورس المسار %s: %s", slug, e)
+                continue
+            if res.get("ok"):
+                existing.add(slug)
+                log.info(
+                    "أُنشئ كورس مسار: %s (%s درس)", slug, res.get("lessons")
+                )
+    if changed:
+        log.info("أُصلحت %s مسارات تعلّمية.", changed)
+    return changed
+
+
 async def main() -> None:
     await init_db()
     await seed_languages()
@@ -351,6 +430,7 @@ async def main() -> None:
     await seed_labs()
     await seed_target_labs()
     await seed_paths()
+    await repair_learning_paths()
     log.info("اكتملت البذور.")
 
 
@@ -388,6 +468,12 @@ async def ensure_seeded() -> bool:
 
     try:
         if await _languages_present():
+            # القاعدة مزروعة، لكن المسارات قد تشير لكورسات لم تُنشأ بعد
+            # (ترقية من نسخة قديمة) — إصلاح رخيص وآمن للتكرار.
+            try:
+                await repair_learning_paths()
+            except Exception as e:  # noqa: BLE001
+                log.warning("تعذّر إصلاح المسارات: %s", e)
             log.debug("القاعدة مزروعة بالفعل — تخطّي الزرع.")
             return False
     except Exception as e:  # noqa: BLE001
@@ -412,6 +498,10 @@ async def ensure_seeded() -> bool:
         await conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": SEED_LOCK_ID})
         try:
             if await _languages_present():
+                try:
+                    await repair_learning_paths()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("تعذّر إصلاح المسارات: %s", e)
                 log.info("القاعدة مزروعة أثناء الانتظار — تخطّي.")
                 return False
             await main()

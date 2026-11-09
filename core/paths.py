@@ -20,13 +20,29 @@ async def get_path(session: AsyncSession, slug: str) -> LearningPath | None:
 
 
 async def _lesson_ids(session: AsyncSession, slugs: list[str]) -> list[int]:
+    """معرّفات دروس المسار الفعلية فقط.
+
+    نتجاهل الكورسات غير المنشورة والدروس غير القابلة للفتح (draft/verified)
+    حتى لا يصبح إكمال المسار مستحيلا بسبب دروس لا تظهر في التسلسل.
+    """
     if not slugs:
         return []
-    course_ids = list(await session.scalars(select(Course.id).where(Course.slug.in_(slugs))))
+    course_ids = list(
+        await session.scalars(
+            select(Course.id).where(
+                Course.slug.in_(slugs), Course.is_published.is_(True)
+            )
+        )
+    )
     if not course_ids:
         return []
     res = await session.execute(
-        select(Lesson.id).join(Stage, Stage.id == Lesson.stage_id).where(Stage.course_id.in_(course_ids))
+        select(Lesson.id)
+        .join(Stage, Stage.id == Lesson.stage_id)
+        .where(
+            Stage.course_id.in_(course_ids),
+            Lesson.status.in_(("published", "outline")),
+        )
     )
     return [r for r in res.scalars()]
 

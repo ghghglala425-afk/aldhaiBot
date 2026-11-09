@@ -75,15 +75,20 @@ async def build_language_outline(
     *,
     icon: str = "📘",
     use_ai: bool = True,
+    per_stage: int | None = None,
 ) -> dict:
-    """ينشئ كورس اللغة + مراحله + دروسه (status='outline'). يُرجع إحصاءات."""
+    """ينشئ كورس اللغة + مراحله + دروسه (status='outline'). يُرجع إحصاءات.
+
+    ``per_stage`` يتيح إنشاء مخطط أصغر (مثلا لكورسات المسارات) ثم يتوسّع
+    تلقائيا عند فتح اللغة من قسم اللغات.
+    """
     from pipeline.taxonomy import iter_language_lessons
 
-    plans = iter_language_lessons(language, name_ar, icon=icon)
+    plans = iter_language_lessons(language, name_ar, icon=icon, per_stage=per_stage)
     if not plans:
         return {"ok": False, "error": "لا توجد خطة"}
 
-    per_stage = max(1, settings.GEN_LESSONS_PER_STAGE)
+    per_stage = max(1, per_stage or settings.GEN_LESSONS_PER_STAGE)
     if use_ai and settings.ai_configured:
         titles = await suggest_titles(language, name_ar, plans, per_stage)
         for p in plans:
