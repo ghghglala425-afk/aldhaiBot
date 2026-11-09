@@ -85,8 +85,107 @@ def _lesson_fallback(lesson: Lesson, codes: list[CodeSample]) -> str:
     return "\n".join(parts)
 
 
+_STOPWORDS = {
+    "ما", "ماذا", "لماذا", "كيف", "هل", "عن", "في", "من", "إلى", "على", "مع",
+    "هو", "هي", "هذا", "هذه", "ذلك", "التي", "الذي", "أو", "و", "ثم", "كل",
+    "أريد", "اريد", "اشرح", "اشرحلي", "لي", "وضح", "وضحلي", "يعني", "مثال",
+    "the", "and", "for", "what", "how", "why", "with", "this", "that",
+}
+
+
+def _keywords(question: str) -> list[str]:
+    """كلمات مفتاحية عربية/إنجليزية للبحث في مكتبة الدروس."""
+    clean = re.sub(r"[^\w\s\u0600-\u06FF]", " ", question or "").lower()
+    out: list[str] = []
+    for raw in clean.split():
+        word = raw.strip()
+        if len(word) < 3 or word in _STOPWORDS:
+            continue
+        if word not in out:
+            out.append(word)
+    return out[:6]
+
+
+async def library_answer(question: str, *, limit: int = 3) -> str | None:
+    """بديل محلي: يجيب من محتوى دروس الأكاديمية حين تتوفّر حصص AI.
+
+    يبحث في عنوان الدرس وملخصه ونقاطه ثم يعيد مقتطفات عملية مع أقرب درس.
+    """
+    words = _keywords(question)
+    if not words:
+        return None
+    from sqlalchemy import or_
+
+    async with SessionLocal() as session:
+        conds = []
+        for word in words:
+            like = f"%{word}%"
+            conds.extend(
+                [
+                    Lesson.title.ilike(like),
+                    Lesson.summary.ilike(like),
+                    Lesson.slug.ilike(like),
+                ]
+            )
+        rows = list(
+            (
+                await session.execute(
+                    select(Lesson)
+                    .where(
+                        Lesson.status.in_(("published", "outline")),
+                        or_(*conds),
+                    )
+                    .limit(60)
+                )
+            ).scalars()
+        )
+        if not rows:
+            return None
+
+        def score(lesson: Lesson) -> int:
+            blob = " ".join(
+                [
+                    lesson.title or "",
+                    lesson.summary or "",
+                    " ".join(lesson.key_points or []),
+                ]
+            ).lower()
+            return sum(1 for w in words if w in blob)
+
+        rows.sort(key=lambda x: (-score(x), x.order_index or 0))
+        picked = rows[: max(1, limit)]
+
+        parts = ["📚 أقرب ما في مكتبة الأكاديمية لسؤالك:"]
+        for lesson in picked:
+            parts.append(f"\n▫️ {lesson.title}")
+            if lesson.summary:
+                parts.append(lesson.summary)
+            elif lesson.content_md:
+                parts.append(_plain_md(lesson.content_md)[:400])
+            if lesson.key_points:
+                parts.extend(f"• {k}" for k in lesson.key_points[:4])
+        codes = list(
+            (
+                await session.execute(
+                    select(CodeSample)
+                    .where(CodeSample.lesson_id == picked[0].id)
+                    .limit(1)
+                )
+            ).scalars()
+        )
+        if codes:
+            parts.append(f"\n💻 مثال من الدرس: {codes[0].title}")
+            parts.append(codes[0].code[:800])
+    parts.append(
+        "\n\nℹ️ هذه إجابة من محتوى الأكاديمية لأن المساعد الذكي غير متاح الآن "
+        "(نفدت حصة المزوّدين المجانية). الحصص تتجدّد منتصف ليل UTC."
+    )
+    return "\n".join(parts)
+
+
 async def _run_ai(
-    message, base: str, note: str, prompt: str, *, timeout: float
+    message, base: str, note: str, prompt: str, *, timeout: float,
+    fallback_factory=None,
 ) -> str | None:
     """ينفّذ نداء AI مع مؤشر انتظار متجدد، ويُرجع None (بعد إظهار الخطأ) عند الفشل."""
     msg = await message.reply_text(base)
@@ -107,8 +206,20 @@ async def _run_ai(
         return answer
     except Exception as e:  # noqa: BLE001
         log.warning("تعذّر نداء المساعد: %s", e)
+        text = _error_text(e)
+        if fallback_factory is not None:
+            try:
+                local = await fallback_factory()
+            except Exception as fe:  # noqa: BLE001
+                log.warning("تعذّر البحث في مكتبة الأكاديمية: %s", fe)
+                local = None
+            if local:
+                text = local
         try:
-            await msg.edit_text(_error_text(e))
+            if len(text) > 3500:
+                await reply_long(msg, text)
+            else:
+                await msg.edit_text(text)
         except Exception:  # noqa: BLE001
             pass
         return None
@@ -123,7 +234,7 @@ async def _run_ai(
             pass
 
 
-async def _answer(update: Update, question: str) -> None:
+async def _answer(update: Update, question: str, *, fallback_question: str | None = None) -> None:
     from app import ratelimit
 
     if not await ratelimit.guard(update, "ask"):
@@ -137,6 +248,7 @@ async def _answer(update: Update, question: str) -> None:
         "أكتب شرحا مفصّلا…",
         question,
         timeout=ANSWER_TIMEOUT,
+        fallback_factory=lambda: library_answer(fallback_question or question),
     )
     if answer is None:
         return
@@ -194,12 +306,13 @@ async def contextual_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def got_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    question = (update.message.text or "").strip()
+    raw = (update.message.text or "").strip()
+    question = raw
     lesson_id = context.user_data.pop("ask_lesson_id", None)
     if lesson_id:
         async with SessionLocal() as s:
             question = await _context_prompt(s, lesson_id, question)
-    await _answer(update, question)
+    await _answer(update, question, fallback_question=raw)
     return ConversationHandler.END
 
 

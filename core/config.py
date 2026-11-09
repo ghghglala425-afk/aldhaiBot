@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     GROQ_API_KEYS: str = ""
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
+    # لكل نموذج في Groq حصة يومية مستقلة على الخطة المجانية؛ السلسلة
+    # تعطي مساحة أكبر تلقائيا عند نفاد نموذج قبل بقية المزوّدين.
+    GROQ_MODEL_CHAIN: str = (
+        "qwen/qwen3.8-27b,openai/gpt-oss-20b,allam-2-7b,openai/gpt-oss-120b"
+    )
     GROQ_RPM: int = 30
     GROQ_RPD: int = 1_000
     GROQ_TPD: int = 200_000
@@ -210,6 +215,8 @@ class Settings(BaseSettings):
     AI_RESERVE_PCT: int = 25
     # أقل عدد طلبات يُترك للتفاعل الفوري قبل أن توقف مهام الخلفية نفسها.
     AI_RESERVE_RPD: int = 80
+    # رصيد توكنز يُترك لكل مزوّد للتفاعل (المساعد/فتح الدرس) قبل توليد الخلفية.
+    AI_RESERVE_TOKENS: int = 40_000
     # عامل الخلفية داخل عملية البوت
     GEN_WORKER_CONCURRENCY: int = 4
     GEN_QUEUE_POLL: int = 5
@@ -303,6 +310,17 @@ class Settings(BaseSettings):
             *(self.GEMINI_MODEL_CHAIN or "").split(","),
             self.GEMINI_FALLBACK_MODEL,
         ]
+        for item in raw:
+            name = (item or "").strip()
+            if name and name not in out:
+                out.append(name)
+        return out
+
+    @property
+    def groq_models(self) -> List[str]:
+        """سلسلة نماذج Groq (بلا تكرار، الأساسي أولا)."""
+        out: List[str] = []
+        raw = [self.GROQ_MODEL, *(self.GROQ_MODEL_CHAIN or "").split(",")]
         for item in raw:
             name = (item or "").strip()
             if name and name not in out:

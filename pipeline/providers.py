@@ -64,31 +64,45 @@ class ProviderSpec:
         tail = self.api_key[-8:] if len(self.api_key) >= 8 else self.api_key
         return f"{self.name[:12]}:{tail}"
 
+    @property
+    def usage_id(self) -> str:
+        """عدّاد الاستخدام: لكل (مفتاح, نموذج) حصة يومية مستقلة.
+
+        الحصص المجانية في Google/Groq تُحسب لكل نموذج على حدة؛ خلطها في عدّاد
+        واحد كان يجعل المزوّد يبدو منتهيا بينما نماذجه الأخرى ما تزال تعمل.
+        الحد الأقصى 30 حرفا (طول العمود في قاعدة البيانات).
+        """
+        tag = "".join(ch for ch in self.model.lower() if ch.isalnum())[:10]
+        if not tag:
+            return self.key_id
+        ident = f"{self.key_id}~{tag}"
+        return ident[:30]
+
     def ready(self) -> bool:
-        until = max(self._cooldown_until, _COOLDOWNS.get(self.key_id, 0.0))
+        until = max(self._cooldown_until, _COOLDOWNS.get(self.usage_id, 0.0))
         return time.monotonic() >= until
 
     def cool(self, seconds: float) -> None:
         until = time.monotonic() + max(1.0, seconds)
         self._cooldown_until = until
-        _COOLDOWNS[self.key_id] = until
+        _COOLDOWNS[self.usage_id] = until
 
     async def throttle(self) -> None:
         """يحترم الحد الأقصى لطلبات الدقيقة (RPM) لكل مفتاح عبر كل النداءات."""
         if self.rpm <= 0:
             return
         # قفل لكل (حلقة الأحداث، المفتاح) يمنع تجاوز RPM عند الطلبات المتزامنة.
-        lock_key = (id(asyncio.get_running_loop()), self.key_id)
+        lock_key = (id(asyncio.get_running_loop()), self.usage_id)
         lock = _THROTTLE_LOCKS.get(lock_key)
         if lock is None:
             lock = asyncio.Lock()
             _THROTTLE_LOCKS[lock_key] = lock
         async with lock:
             gap = 60.0 / self.rpm
-            wait = gap - (time.monotonic() - _LAST_CALL.get(self.key_id, 0.0))
+            wait = gap - (time.monotonic() - _LAST_CALL.get(self.usage_id, 0.0))
             if wait > 0:
                 await asyncio.sleep(wait)
-            _LAST_CALL[self.key_id] = time.monotonic()
+            _LAST_CALL[self.usage_id] = time.monotonic()
 
 
 # ---------------------------------------------------------------------
@@ -102,33 +116,35 @@ def build_providers(settings_override=None) -> list[ProviderSpec]:
     out: list[ProviderSpec] = []
     for name in s.free_providers:
         if name == "gemini":
-            for key in s.gemini_api_keys:
-                key_id = f"gemini:{(key[-8:] if len(key) >= 8 else key)}"
-                out.append(
-                    ProviderSpec(
+            # نموذج أولا ثم كل مفاتيحه: لكل نموذج حصة مستقلة، ولكل مفتاح نسخة.
+            for model in s.gemini_models:
+                for key in s.gemini_api_keys:
+                    spec = ProviderSpec(
                         name="gemini",
                         base_url="https://generativelanguage.googleapis.com/v1beta",
-                        model=_chosen_model.get(key_id, s.GEMINI_MODEL),
+                        model=model,
                         api_key=key,
                         rpm=s.GEMINI_RPM,
                         rpd=s.GEMINI_RPD,
                         tpd=s.GEMINI_TPD,
                         native=True,
                     )
-                )
+                    spec.model = _chosen_model.get(spec.usage_id, model)
+                    out.append(spec)
         elif name == "groq":
-            for key in s.groq_api_keys:
-                out.append(
-                    ProviderSpec(
-                        name="groq",
-                        base_url="https://api.groq.com/openai/v1",
-                        model=s.GROQ_MODEL,
-                        api_key=key,
-                        rpm=s.GROQ_RPM,
-                        rpd=s.GROQ_RPD,
-                        tpd=s.GROQ_TPD,
+            for model in s.groq_models:
+                for key in s.groq_api_keys:
+                    out.append(
+                        ProviderSpec(
+                            name="groq",
+                            base_url="https://api.groq.com/openai/v1",
+                            model=model,
+                            api_key=key,
+                            rpm=s.GROQ_RPM,
+                            rpd=s.GROQ_RPD,
+                            tpd=s.GROQ_TPD,
+                        )
                     )
-                )
         elif name == "openrouter":
             for key in s.openrouter_api_keys:
                 out.append(
@@ -270,7 +286,7 @@ async def interactive_headroom() -> tuple[int, int]:
             # نأخذ أفضل مفتاح متاح، لا الأول فقط: مفتاح واحد منتهٍ لا يوقف البقية.
             best = 0
             for spec in specs:
-                row = await _usage_row(session, spec.key_id)
+                row = await _usage_row(session, spec.usage_id)
                 reqs_left = (spec.rpd - row.requests) if spec.rpd else big
                 tok_left = (spec.tpd - row.tokens) if spec.tpd else big
                 best = max(best, min(reqs_left, tok_left))
@@ -280,8 +296,28 @@ async def interactive_headroom() -> tuple[int, int]:
         return big, big
 
 
+async def provider_token_headroom() -> int:
+    """أكبر رصيد توكنز متبقٍ لدى أي مزوّد صالح (0 = لا مساحة للخلفية)."""
+    from core.db import SessionLocal
+
+    big = 10**9
+    try:
+        async with SessionLocal() as session:
+            best = 0
+            for spec in build_providers():
+                if not spec.ready():
+                    continue
+                row = await _usage_row(session, spec.usage_id)
+                left = (spec.tpd - row.tokens) if spec.tpd else big
+                best = max(best, left)
+            return max(0, best)
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر حساب رصيد التوكنز: %s", e)
+        return big
+
+
 async def _can_call(session, spec: ProviderSpec) -> bool:
-    row = await _usage_row(session, spec.key_id)
+    row = await _usage_row(session, spec.usage_id)
     if spec.rpd and row.requests >= spec.rpd:
         return False
     if spec.tpd and row.tokens >= spec.tpd:
@@ -296,7 +332,7 @@ async def _record(session, spec: ProviderSpec, tokens: int, *, error: bool = Fal
     """يزيد العدّاد ذرّيا (UPDATE ... SET x = x + 1) لتجنّب فقدان الزيادات."""
     from core.models import AIUsage
 
-    row = await _usage_row(session, spec.key_id)
+    row = await _usage_row(session, spec.usage_id)
     await session.execute(
         update(AIUsage)
         .where(AIUsage.id == row.id)
@@ -451,9 +487,13 @@ def _rank_models(names: list[str]) -> list[str]:
 
 
 def _model_candidates(spec: ProviderSpec) -> list[str]:
-    """قائمة أسماء الموديلات المطلوبة: الأساسي ثم السلسلة ثم البديل."""
+    """أسماء الموديلات لمحاولة واحدة داخل هذا المزوّد.
+
+    السلسلة تُبنى في `build_providers` كمزوّدين منفصلين (عدّاد مستقل لكل نموذج)،
+    لذا لا نعيد إدراج سلسلة Gemini هنا وإلا اختلطت الحصص.
+    """
     out: list[str] = []
-    for name in (spec.model, *settings.gemini_models, *_chosen_model.get(spec.key_id, "").split(",")):
+    for name in (spec.model,):
         name = (name or "").strip()
         if name and name not in out:
             out.append(name)
@@ -570,9 +610,7 @@ async def _call_chain(
                     tried.append(name)
             continue
         if model != spec.model:
-            log.info("اعتمد موديل Gemini: %s", model)
-            _chosen_model[spec.key_id] = model
-            spec.model = model
+            log.info("اعتمد موديل بديل لهذه المحاولة: %s", model)
         return text, tokens
     raise ProviderError(
         "كل أسماء الموديلات مرفوضة: " + " | ".join(errors[-3:] or ["لا يوجد بديل"])
@@ -655,10 +693,13 @@ async def complete(
                 continue
             except Exception as e:  # noqa: BLE001
                 await _record(session, spec, 0, error=True)
+                if _is_model_error(e):
+                    # اسم نموذج متقاعد: لا نعيد المحاولة عليه كل طلب.
+                    spec.cool(6 * 3600)
                 errors.append(f"{spec.key_id}: {e}")
                 continue
             await _record(session, spec, tokens)
-        log.info("AI عبر %s (%s توكن)", spec.key_id, tokens)
+        log.info("AI عبر %s (%s) (%s توكن)", spec.key_id, spec.model, tokens)
         return text, spec.name
 
     raise AllProvidersFailed("فشل كل المزوّدين: " + " | ".join(errors[:4]))

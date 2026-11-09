@@ -637,12 +637,19 @@ async def prebuild_user_languages(session, user_id: int, *, priority: int | None
 
 async def _bg_budget_ok() -> bool:
     """هل تسمح الميزانية المتبقية بمواصلة البناء الخلفي؟"""
-    from pipeline.providers import interactive_headroom
+    from pipeline.providers import interactive_headroom, provider_token_headroom
 
     tokens_left, requests_left = await interactive_headroom()
     if tokens_left <= 0:
         return False
-    return requests_left > max(0, int(getattr(settings, "AI_RESERVE_RPD", 80) or 0))
+    if requests_left <= max(0, int(getattr(settings, "AI_RESERVE_RPD", 80) or 0)):
+        return False
+    # حتى لا تستهلك الخلفية آخر توكنز المزوّد وتجوّع المساعد:
+    # نُبقي رصيدا تفاعليا لكل مزوّد على حدة.
+    reserve_tokens = max(0, int(getattr(settings, "AI_RESERVE_TOKENS", 40_000) or 0))
+    if reserve_tokens and await provider_token_headroom() <= reserve_tokens:
+        return False
+    return True
 
 
 async def _recent_failures() -> int:

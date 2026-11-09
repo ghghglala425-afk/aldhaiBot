@@ -91,8 +91,9 @@ def ai_error_text(err: Exception | str | None) -> str:
         )
     if "نفدت" in text or "429" in text or "quota" in low or "exhausted" in low:
         return (
-            "نفدت حصة الذكاء الاصطناعي المتاحة.\n"
-            "ارفع AI_DAILY_TOKEN_BUDGET أو أضف مزوّدا/مفتاحا احتياطيا، ثم أعد المحاولة."
+            "نفدت حصة الذكاء الاصطناعي المجانية لهذا اليوم لدى كل المزوّدين.\n"
+            "الحصص تتجدّد تلقائيا منتصف ليل UTC (03:00 بتوقيت مكة).\n"
+            "يمكنك الآن استخدام «📚 من مكتبة الأكاديمية» أو مراجعة الدرس والاختبار."
         )
     if "فشل كل المزوّدين" in text:
         detail = text.split(":", 1)[-1].strip() if ":" in text else ""

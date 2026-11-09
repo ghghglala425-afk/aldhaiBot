@@ -143,9 +143,11 @@ class TestProviderOrdering:
             AI_PROVIDER_ORDER="groq,gemini,openrouter",
         )
         providers = build_providers(s)
-        assert [p.name for p in providers] == ["gemini", "gemini"]
-        assert providers[0].api_key == "k1"
-        assert providers[1].api_key == "k2"
+        # لكل نموذج في السلسلة نسخة لكل مفتاح (حصص مستقلة لكل نموذج).
+        assert len(providers) == 2 * len(s.gemini_models)
+        assert all(p.name == "gemini" for p in providers)
+        assert [p.api_key for p in providers[:2]] == ["k1", "k2"]
+        assert {p.model for p in providers} == set(s.gemini_models)
 
     def test_build_providers_skips_empty_keys(self) -> None:
         from core.config import Settings
@@ -161,7 +163,8 @@ class TestProviderOrdering:
             AI_PROVIDER_ORDER="gemini,groq,openrouter",
         )
         providers = build_providers(s)
-        assert [p.name for p in providers] == ["groq"]
+        assert [p.name for p in providers] == ["groq"] * len(s.groq_models)
+        assert {p.model for p in providers} == set(s.groq_models)
 
     def test_build_providers_many_gemini_keys(self) -> None:
         from core.config import Settings
@@ -174,8 +177,8 @@ class TestProviderOrdering:
             AI_PROVIDER_ORDER="gemini",
         )
         providers = build_providers(s)
-        assert [p.api_key for p in providers] == ["k1", "k2", "k3"]
-        assert len({p.key_id for p in providers}) == 3
+        assert [p.api_key for p in providers[:3]] == ["k1", "k2", "k3"]
+        assert len(providers) == 3 * len(s.gemini_models)
 
     def test_build_providers_extra_openai_compatible(self) -> None:
         from core.config import Settings
@@ -224,7 +227,35 @@ class TestPerKeyState:
 
         a = p.ProviderSpec("gemini", "x", "m", "keyAAAAAA", rpd=1)
         b = p.ProviderSpec("gemini", "x", "m", "keyBBBBBB", rpd=1)
-        rows[a.key_id] = SimpleNamespace(requests=1, tokens=0, errors=0)
+        rows[a.usage_id] = SimpleNamespace(requests=1, tokens=0, errors=0)
+
+        assert asyncio.run(p._can_call(None, a)) is False
+        assert asyncio.run(p._can_call(None, b)) is True
+
+    def test_usage_is_isolated_per_model_on_same_key(self, monkeypatch) -> None:
+        """حصة كل نموذج مستقلة: نموذج منتهٍ لا يعطّل بقية نماذج المفتاح نفسه."""
+        import asyncio
+        from types import SimpleNamespace
+
+        from pipeline import providers as p
+
+        rows: dict[str, SimpleNamespace] = {}
+
+        async def fake_usage_row(session, provider):
+            return rows.setdefault(
+                provider, SimpleNamespace(requests=0, tokens=0, errors=0)
+            )
+
+        async def no_budget(session):
+            return None
+
+        monkeypatch.setattr(p, "_usage_row", fake_usage_row)
+        monkeypatch.setattr(p, "_budget_left", no_budget)
+
+        a = p.ProviderSpec("gemini", "x", "gemini-3.5-flash-lite", "samekey1", tpd=100)
+        b = p.ProviderSpec("gemini", "x", "gemini-3.1-flash-lite", "samekey1", tpd=100)
+        assert a.usage_id != b.usage_id
+        rows[a.usage_id] = SimpleNamespace(requests=1, tokens=100, errors=0)
 
         assert asyncio.run(p._can_call(None, a)) is False
         assert asyncio.run(p._can_call(None, b)) is True
@@ -243,15 +274,15 @@ class TestPerKeyState:
             await init_db()
             spec = p.ProviderSpec("unit", "x", "m", "unit-key-12345678")
             async with SessionLocal() as s:
-                await s.execute(delete(AIUsage).where(AIUsage.provider == spec.key_id))
+                await s.execute(delete(AIUsage).where(AIUsage.provider == spec.usage_id))
                 await s.commit()
-                first = await p._usage_row(s, spec.key_id)
-                second = await p._usage_row(s, spec.key_id)
+                first = await p._usage_row(s, spec.usage_id)
+                second = await p._usage_row(s, spec.usage_id)
                 assert first.id == second.id
                 await p._record(s, spec, 12)
                 await p._record(s, spec, 8)
                 row = await s.scalar(
-                    select(AIUsage).where(AIUsage.provider == spec.key_id)
+                    select(AIUsage).where(AIUsage.provider == spec.usage_id)
                 )
                 return row.requests, row.tokens, row.errors
 
@@ -354,11 +385,11 @@ class TestModelFailover:
                 )
             return "ok", 7
 
-        async def no_discovery(spec):
-            return []
+        async def discovery(spec):
+            return ["gemini-3.5-flash-lite"]
 
         monkeypatch.setattr(p, "_call_one", fake_call)
-        monkeypatch.setattr(p, "_discover_models", no_discovery)
+        monkeypatch.setattr(p, "_discover_models", discovery)
         spec = self._spec(p)
         text, tokens = asyncio.run(
             p._call_with_fallback(
@@ -368,8 +399,6 @@ class TestModelFailover:
         assert (text, tokens) == ("ok", 7)
         assert calls[0] == "gemini-2.5-flash-lite"
         assert calls[1] == "gemini-3.5-flash-lite"
-        assert spec.model == "gemini-3.5-flash-lite"
-        assert p._chosen_model[spec.key_id] == "gemini-3.5-flash-lite"
 
     def test_discovered_model_is_used(self, monkeypatch) -> None:
         import asyncio
