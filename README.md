@@ -135,7 +135,9 @@ GEMINI_API_KEY=<من https://aistudio.google.com/apikey>
 # اختياري: مفتاح ثانٍ من مشروع Google آخر لمضاعفة الحصة اليومية
 GEMINI_API_KEY_2=
 GROQ_API_KEY=<اختياري من https://console.groq.com/keys>
+GROQ_MODEL=qwen/qwen3.8-27b
 OPENROUTER_API_KEY=<اختياري من https://openrouter.ai/keys>
+OPENROUTER_MODEL=cohere/north-mini-code:free
 AI_DAILY_TOKEN_BUDGET=2000000
 GEMINI_MODEL=gemini-3.5-flash-lite
 GEMINI_FALLBACK_MODEL=gemini-3.8-flash

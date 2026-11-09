@@ -89,13 +89,13 @@ class Settings(BaseSettings):
     GEMINI_TPD: int = 2_000_000
     GROQ_API_KEYS: str = ""
     GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    GROQ_MODEL: str = "qwen/qwen3.8-27b"
     GROQ_RPM: int = 30
     GROQ_RPD: int = 1_000
     GROQ_TPD: int = 200_000
     OPENROUTER_API_KEYS: str = ""
     OPENROUTER_API_KEY: str = ""
-    OPENROUTER_MODEL: str = "meta-llama/llama-3.3-70b-instruct:free"
+    OPENROUTER_MODEL: str = "cohere/north-mini-code:free"
     OPENROUTER_RPM: int = 20
     OPENROUTER_RPD: int = 50
     OPENROUTER_TPD: int = 0

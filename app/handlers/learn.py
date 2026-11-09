@@ -801,9 +801,30 @@ def _quiz_done_kb(
     return InlineKeyboardMarkup(rows)
 
 
-async def _render_question(message, context: ContextTypes.DEFAULT_TYPE, show_feedback: bool = False) -> None:
-    st = context.user_data["quiz"]
-    qid = st["qids"][st["i"]]
+def _html(text: str | None) -> str:
+    """يهرّب نص السؤال/الخيارات للعرض داخل HTML."""
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def _edit_or_send(message, text: str, kb: InlineKeyboardMarkup) -> None:
+    """يعدّل الرسالة في مكانها (أسرع بكثير) ويرسل رسالة جديدة عند التعذّر فقط."""
+    try:
+        await message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        return
+    except Exception as e:  # noqa: BLE001
+        if "not modified" in str(e).lower():
+            return
+    await tg.send_text(message, text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+async def _render_question(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يرسم السؤال الحالي — ويُظهر التغذية الراجعة فورا بعد كل إجابة."""
+    st = context.user_data.get("quiz")
+    if not st or not st.get("qids"):
+        return
+    qids = st["qids"]
+    st["i"] = max(0, min(st["i"], len(qids) - 1))
+    qid = qids[st["i"]]
     async with SessionLocal() as s:
         q = await s.get(Question, qid)
         opts = list(
@@ -811,118 +832,157 @@ async def _render_question(message, context: ContextTypes.DEFAULT_TYPE, show_fee
                 select(Option).where(Option.question_id == qid).order_by(Option.order_index)
             )).scalars().all()
         )
+    if q is None:
+        return
+
     chosen = set(st["resp"].get(qid, []))
     correct_ids = {o.id for o in opts if o.is_correct}
-    is_answered = qid in st["resp"]
-    
-    lines = [f"🧠 سؤال {st['i'] + 1} / {len(st['qids'])}", "", q.text, ""]
-    
-    # Show feedback if answered and show_feedback is True (after finishing quiz)
-    if show_feedback and is_answered:
-        chosen_correct = chosen & {o.id for o in opts if o.is_correct}
-        if chosen == {o.id for o in opts if o.is_correct}:
-            lines.append("✅ <b>إجابة صحيحة!</b>")
-        else:
-            lines.append("❌ <b>إجابة خاطئة.</b>")
-            # Show correct answer(s)
-            correct_opts = [o for o in opts if o.is_correct]
+    correct_opts = [o for o in opts if o.is_correct]
+    revealed = qid in st.get("revealed", [])
+    is_multi = q.kind == "multi"
+    is_ok = bool(chosen) and chosen == correct_ids
+
+    lines = [
+        f"🧠 <b>سؤال {st['i'] + 1} / {len(qids)}</b>  ·  ✅ {len(st.get('revealed', []))}/{len(qids)}",
+        "",
+        _html(q.text),
+        "",
+    ]
+    if revealed:
+        lines.append("✅ <b>إجابة صحيحة! أحسنت.</b>" if is_ok else "❌ <b>إجابتك غير صحيحة.</b>")
+        if not is_ok:
             if len(correct_opts) == 1:
-                lines.append(f"✅ الإجابة الصحيحة: <b>{correct_opts[0].text}</b>")
+                lines.append(f"✅ <b>الإجابة الصحيحة:</b> {_html(correct_opts[0].text)}")
             else:
-                lines.append("✅ الإجابات الصحيحة:")
-                for o in correct_opts:
-                    lines.append(f"  • <b>{o.text}</b>")
-            # Show explanation if available
-            if q.explanation:
-                lines.append(f"💡 الشرح: {q.explanation}")
-    # Show explanation immediately after answering in normal mode (instant feedback)
-    elif not show_feedback and is_answered and q.explanation:
-        # Show explanation right after answering (instant feedback mode)
-        lines.append(f"💡 الشرح: {q.explanation}")
-    
+                lines.append("✅ <b>الإجابات الصحيحة:</b>")
+                lines.extend(f"  • {_html(o.text)}" for o in correct_opts)
+        if q.explanation:
+            lines.append("")
+            lines.append(f"💡 <b>التعليل:</b> {_html(q.explanation)}")
+        elif not is_ok:
+            lines.append("")
+            lines.append("<i>راجع الدرس ثم تابع لباقي الأسئلة.</i>")
+    elif is_multi:
+        lines.append("<i>اختر كل الإجابات الصحيحة ثم اضغط «تأكيد الاختيار».</i>")
+
     buttons: list[list[InlineKeyboardButton]] = []
     for o in opts:
-        if show_feedback:
-            # In review mode, show correct/incorrect markers
-            if o.id in correct_ids:
-                mark = "✅ "
-            elif o.id in chosen:
-                mark = "❌ "
-            else:
-                mark = "⭘ "
+        if revealed:
+            mark = "✅ " if o.id in correct_ids else ("❌ " if o.id in chosen else "▫️ ")
+            cb = "qnoop"
+        elif is_multi:
+            mark = "☑️ " if o.id in chosen else "⬜️ "
+            cb = f"qopt:{qid}:{o.id}"
         else:
-            # Normal quiz mode
-            mark = "✅ " if o.id in chosen else ("◻️ " if q.kind == "multi" else "🔘 ")
-        buttons.append([InlineKeyboardButton(mark + o.text[:50], callback_data=f"qopt:{qid}:{o.id}")])
-    
-    nav = []
+            mark = "🔘 "
+            cb = f"qopt:{qid}:{o.id}"
+        buttons.append([InlineKeyboardButton(mark + o.text[:50], callback_data=cb)])
+
+    if is_multi and not revealed:
+        buttons.append(
+            [InlineKeyboardButton("✅ تأكيد الاختيار", callback_data="qconfirm")]
+        )
+
+    nav: list[InlineKeyboardButton] = []
     if st["i"] > 0:
         nav.append(InlineKeyboardButton("⬅️ السابق", callback_data="qprev"))
-    if st["i"] < len(st["qids"]) - 1:
+    if st["i"] < len(qids) - 1:
         nav.append(InlineKeyboardButton("التالي ➡️", callback_data="qnext"))
-    else:
-        if show_feedback:
-            nav.append(
-                InlineKeyboardButton(
-                    "🔁 إعادة الاختبار",
-                    callback_data=f"qz_start:{st['lesson_id']}",
-                )
-            )
-        else:
-            nav.append(InlineKeyboardButton("🏁 إنهاء", callback_data="qfinish"))
-    buttons.append(nav)
-    
-    parse_mode = ParseMode.HTML if show_feedback else ParseMode.MARKDOWN
-    await message.reply_text(
-        "\n".join(lines)[:3900],
-        reply_markup=InlineKeyboardMarkup(buttons),
-        parse_mode=parse_mode,
-    )
+    if len(st.get("revealed", [])) >= len(qids):
+        nav.append(InlineKeyboardButton("🏁 النتيجة", callback_data="qfinish"))
+    elif st["i"] == len(qids) - 1:
+        nav.append(InlineKeyboardButton("🏁 إنهاء", callback_data="qfinish"))
+    if nav:
+        buttons.append(nav)
+
+    await _edit_or_send(message, "\n".join(lines)[:3900], InlineKeyboardMarkup(buttons))
 
 
 async def quiz_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
-    await q.answer()
     lesson_id = int(q.data.split(":")[1])
     async with SessionLocal() as s:
         from core.models import Quiz
 
         quiz = await s.scalar(select(Quiz).where(Quiz.lesson_id == lesson_id))
         if not quiz:
-            await tg.edit_text(q, "لا يوجد اختبار لهذا الدرس.")
+            await q.answer("لا يوجد اختبار لهذا الدرس.", show_alert=True)
             return
         qids = list(
             (await s.execute(
                 select(Question.id).where(Question.quiz_id == quiz.id).order_by(Question.order_index)
             )).scalars().all()
         )
-    context.user_data["quiz"] = {"lesson_id": lesson_id, "qids": qids, "i": 0, "resp": {}}
-    await tg.edit_text(q, "ابدأنا الاختبار 👇")
+    if not qids:
+        await q.answer("لا توجد أسئلة في هذا الاختبار.", show_alert=True)
+        return
+    await q.answer("ابدأنا الاختبار 🚀")
+    context.user_data["quiz"] = {
+        "lesson_id": lesson_id,
+        "qids": qids,
+        "i": 0,
+        "resp": {},
+        "revealed": [],
+    }
     await _render_question(update.effective_message, context)
 
 
 async def quiz_option(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
     st = context.user_data.get("quiz")
-    if not st:
-        await q.answer("انتهت الجلسة، أعد البدء.", show_alert=True)
+    if not st or not st.get("qids"):
+        await q.answer("انتهت الجلسة، ابدأ الاختبار من جديد.", show_alert=True)
         return
-    await q.answer()
-    _, qid, oid = q.data.split(":")
-    qid, oid = int(qid), int(oid)
+    st.setdefault("revealed", [])
+    _, qid_s, oid_s = q.data.split(":")
+    qid, oid = int(qid_s), int(oid_s)
+    if qid not in st["qids"] or st["qids"][st["i"]] != qid:
+        await q.answer("هذا سؤال سابق — انتقل إلى السؤال الحالي.", show_alert=True)
+        return
+    if qid in st.get("revealed", []):
+        await q.answer("عُرضت إجابة هذا السؤال بالفعل.")
+        return
     async with SessionLocal() as s:
         question = await s.get(Question, qid)
+    if question is None:
+        await q.answer("السؤال غير موجود.", show_alert=True)
+        return
     cur = set(st["resp"].get(qid, []))
     if question.kind == "multi":
+        # الاختيار المتعدد: نجمّع الاختيارات ثم يؤكّدها المستخدم.
         cur.symmetric_difference_update({oid})
+        st["resp"][qid] = sorted(cur)
+        await q.answer()
     else:
-        cur = {oid}
-    st["resp"][qid] = list(cur)
-    try:
-        await q.delete_message()
-    except Exception:
-        pass
+        st["resp"][qid] = [oid]
+        if qid not in st["revealed"]:
+            st["revealed"].append(qid)
+        # التغذية الراجعة الفورية تظهر داخل نص السؤال (صحيح/خطأ + التعليل).
+        await q.answer("تم تسجيل إجابتك")
     await _render_question(update.effective_message, context)
+
+
+async def quiz_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """تأكيد إجابة سؤال الاختيار المتعدد ثم إظهار التغذية الراجعة."""
+    q = update.callback_query
+    st = context.user_data.get("quiz")
+    if not st:
+        await q.answer("انتهت الجلسة.", show_alert=True)
+        return
+    st.setdefault("revealed", [])
+    qid = st["qids"][st["i"]]
+    if not st["resp"].get(qid):
+        await q.answer("اختر إجابة واحدة على الأقل أولا.", show_alert=True)
+        return
+    await q.answer()
+    if qid not in st["revealed"]:
+        st["revealed"].append(qid)
+    await _render_question(update.effective_message, context)
+
+
+async def quiz_noop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """أزرار الخيارات بعد كشف الإجابة — لا تفعل شيئا."""
+    await update.callback_query.answer()
 
 
 async def quiz_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -936,82 +996,47 @@ async def quiz_nav(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         st["i"] = max(0, st["i"] - 1)
     elif q.data == "qnext":
         st["i"] = min(len(st["qids"]) - 1, st["i"] + 1)
-    try:
-        await q.delete_message()
-    except Exception:
-        pass
     await _render_question(update.effective_message, context)
 
 
-async def quiz_result(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """عرض ملخص النتيجة النهائية بعد مراجعة الإجابات."""
+async def quiz_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """مراجعة الإجابات بعد الفشل — الجلسة تبقى مفتوحة."""
     q = update.callback_query
-    await q.answer()
     st = context.user_data.get("quiz")
     if not st:
-        await q.answer("انتهت الجلسة.", show_alert=True)
+        await q.answer("انتهت الجلسة، ابدأ الاختبار من جديد.", show_alert=True)
         return
-    
-    lesson_id = st["lesson_id"]
-    responses = {int(k): v for k, v in st["resp"].items()}
-    async with SessionLocal() as s:
-        lesson = await s.get(Lesson, lesson_id)
-        user = await _user(s, update.effective_user.id)
-        if not user:
-            await tg.edit_text(q, "سجّل دخولك أولا.")
-            return
-        result = await submit_quiz(s, user, lesson, responses)
-        cert = None
-        stage = await s.get(Stage, lesson.stage_id)
-        if result.get("passed") and stage:
-            from core.learning import maybe_certificate
-            cert = await maybe_certificate(s, user, stage.course_id)
-    
-    try:
-        await q.delete_message()
-    except Exception:
-        pass
-    
-    if not result.get("ok"):
-        await tg.send_text(update.effective_message, f"⚠️ {result.get('error')}")
-        return
-    
-    if result["passed"]:
-        msg = (
-            f"🎉 *أحسنت!* نجحت بنسبة {result['score']}%\n"
-            f"⭐ +{result['xp']} نقطة · 🔥 سلسلة {user.streak_count} يوم"
-        )
-        if result.get("badges"):
-            msg += "\n🏅 شارات جديدة: " + ", ".join(result["badges"])
-        if cert:
-            msg += f"\n🎓 شهادة إتمام الكورس: `{cert.code}`"
-        await tg.send_text(update.effective_message, msg, parse_mode=ParseMode.MARKDOWN)
-        await _after_quiz_pass(update, context, lesson)
-    else:
-        await tg.send_text(update.effective_message, 
-            f"😅 نسبتك {result['score']}% — تحتاج {lesson.min_score}%. أعد المحاولة عبر /courses."
-        )
-    
-    context.user_data.pop("quiz", None)
+    await q.answer("مراجعة الإجابات 📖")
+    st["i"] = 0
+    await _render_question(update.effective_message, context)
 
 
-async def _after_quiz_pass(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson: Lesson) -> None:
-    """بعد الاجتياز: يفتح الدرس التالي تلقائيا (والتمرين متاح بزر مستقل)."""
-    from core.learning import lesson_day, next_lesson_id
+async def _after_quiz_pass(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int
+) -> None:
+    """بعد الاجتياز: يفتح الدرس التالي تلقائيا (بجلسة DB جديدة تماما)."""
+    from core.learning import lesson_day
 
     chat_id = update.effective_chat.id
+    tg_id = update.effective_user.id if update.effective_user else None
     async with SessionLocal() as s:
+        lesson = await s.get(Lesson, lesson_id)
+        if not lesson:
+            return
         nxt = await next_lesson_id(s, lesson)
         nxt_lesson = await s.get(Lesson, nxt) if nxt else None
         nxt_day = await lesson_day(s, nxt_lesson) if nxt_lesson else None
-        user = await _user(s, update.effective_user.id) if update.effective_user else None
+        nxt_title = nxt_lesson.title if nxt_lesson else ""
+        user = await _user(s, tg_id) if tg_id else None
+        user_ref = user  # expire_on_commit=False: آمن بعد إغلاق الجلسة
+
     if nxt and nxt_lesson:
         # _display_and_build يتولى العرض + البناء/التحضير المسبق في الخلفية.
         await _display_and_build(
-            context.bot, chat_id, nxt, user=user,
+            context.bot, chat_id, nxt, user=user_ref,
             notice=(
                 "✅ <b>أُنجز الدرس!</b> فتحنا لك الدرس التالي تلقائيا.\n"
-                f"📅 اليوم {nxt_day or ''} — {lv.esc(nxt_lesson.title)}"
+                f"📅 اليوم {nxt_day or ''} — {lv.esc(nxt_title)}"
             ),
         )
     else:
@@ -1023,72 +1048,92 @@ async def _after_quiz_pass(update: Update, context: ContextTypes.DEFAULT_TYPE, l
 
 
 async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ينهي الاختبار: يفتح الدرس التالي عند النجاح، ويُبقي الجلسة عند الفشل."""
     q = update.callback_query
-    await q.answer()
     st = context.user_data.get("quiz")
     if not st:
+        await q.answer("انتهت الجلسة، ابدأ الاختبار من جديد.", show_alert=True)
         return
+
+    st.setdefault("revealed", [])
+    qids = st.get("qids") or []
+    missing = [i for i, qid in enumerate(qids) if qid not in st["revealed"]]
+    if missing:
+        st["i"] = missing[0]
+        await q.answer("أكمل جميع الأسئلة أولا — تبقّى أسئلة بلا إجابة.", show_alert=True)
+        await _render_question(update.effective_message, context)
+        return
+
+    await q.answer("جاري التصحيح… ⏳")
     lesson_id = st["lesson_id"]
     responses = {int(k): v for k, v in st["resp"].items()}
     async with SessionLocal() as s:
         lesson = await s.get(Lesson, lesson_id)
+        if not lesson:
+            await tg.edit_text(q, "الدرس غير موجود.")
+            context.user_data.pop("quiz", None)
+            return
         user = await _user(s, update.effective_user.id)
         if not user:
-            await tg.edit_text(q, "سجّل دخولك أولا.")
+            await tg.edit_text(q, "سجّل دخولك أولا عبر /start.")
             return
         result = await submit_quiz(s, user, lesson, responses)
+        if not result.get("ok"):
+            context.user_data.pop("quiz", None)
+            await tg.edit_text(q, f"⚠️ {result.get('error')}")
+            return
         nxt_id = await next_lesson_id(s, lesson)
-        # شهادة الإتمام
-        cert = None
-        stage = await s.get(Stage, lesson.stage_id)
-        if result.get("passed") and stage:
-            from core.learning import maybe_certificate
+        min_score = lesson.min_score or 70
+        streak = user.streak_count or 0
+        cert_code = None
+        if result.get("passed"):
+            stage = await s.get(Stage, lesson.stage_id)
+            if stage:
+                from core.learning import maybe_certificate
 
-            cert = await maybe_certificate(s, user, stage.course_id)
-
-    context.user_data.pop("quiz", None)
-    try:
-        await q.delete_message()
-    except Exception:
-        pass
-
-    if not result.get("ok"):
-        await tg.send_text(update.effective_message, f"⚠️ {result.get('error')}")
-        return
+                cert = await maybe_certificate(s, user, stage.course_id)
+                cert_code = cert.code if cert else None
 
     if result["passed"]:
-        msg = f"🎉 *أحسنت!* نجحت بنسبة {result['score']}%\n"
+        context.user_data.pop("quiz", None)
+        lines = [f"🎉 <b>أحسنت! نجحت بنسبة {result['score']}%</b>"]
         if result.get("xp"):
-            msg += f"⭐ +{result['xp']} نقطة · 🔥 سلسلة {user.streak_count} يوم\n"
+            lines.append(f"⭐ +{result['xp']} نقطة · 🔥 سلسلة {streak} يوم")
         else:
-            msg += "🔁 إعادة ناجحة — لا نقاط إضافية لهذا الدرس.\n"
+            lines.append("🔁 إعادة ناجحة — لا نقاط إضافية لهذا الدرس.")
         if result.get("badges"):
-            msg += "🏅 شارات جديدة: " + ", ".join(result["badges"]) + "\n"
-        if cert:
-            msg += f"🎓 شهادة إتمام الكورس: `{cert.code}`\n"
+            lines.append("🏅 شارات جديدة: " + ", ".join(result["badges"]))
+        if cert_code:
+            lines.append(f"🎓 شهادة إتمام الكورس: <code>{cert_code}</code>")
         if nxt_id:
-            msg += "➡️ فتحنا لك الدرس التالي."
-        await tg.send_text(
+            lines.append("➡️ نفتح لك الدرس التالي تلقائيا…")
+        await _edit_or_send(
             update.effective_message,
-            msg,
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_quiz_done_kb(lesson_id, nxt_id, passed=True),
+            "\n".join(lines),
+            _quiz_done_kb(lesson_id, nxt_id, passed=True),
         )
-        await _after_quiz_pass(update, context, lesson)
+        await _after_quiz_pass(update, context, lesson_id)
         return
 
-    await tg.send_text(
-        update.effective_message,
-        f"😅 نسبتك {result['score']}% — تحتاج {lesson.min_score}%.\n"
-        "يمكنك إعادة الاختبار الآن أو مراجعة الإجابات بالأسفل.",
-        reply_markup=_quiz_done_kb(lesson_id, nxt_id, passed=False),
+    # ---- فشل: نُبقي الجلسة مفتوحة كي يستطيع المراجعة والإعادة فورا ----
+    correct_count = sum(1 for d in result.get("detail", []) if d.get("correct"))
+    lines = [
+        f"😅 <b>لم تجتز هذه المرة</b> — نسبتك {result['score']}% والمطلوب {min_score}%.",
+        f"✅ أجبت صحيحا عن {correct_count} من {len(qids)} سؤال.",
+        "",
+        "<i>كل سؤال يعرض الآن الإجابة الصحيحة والتعليل. راجعها ثم أعد المحاولة — بلا حاجة للخروج.</i>",
+    ]
+    kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🔁 إعادة المحاولة الآن", callback_data=f"qz_start:{lesson_id}")],
+            [
+                InlineKeyboardButton("📖 مراجعة الإجابات", callback_data="qreview"),
+                InlineKeyboardButton("📚 العودة للدرس", callback_data=f"lesson:{lesson_id}"),
+            ],
+        ]
     )
-    # مراجعة الإجابات بعد الفشل من السؤال الأول.
-    context.user_data["quiz"] = st
-    st["show_feedback"] = True
     st["i"] = 0
-    await _render_question(update.effective_message, context, show_feedback=True)
-    context.user_data.pop("quiz", None)
+    await _edit_or_send(update.effective_message, "\n".join(lines), kb)
 
 
 # ---------------------------------------------------------------------
@@ -1228,7 +1273,9 @@ def register_handlers(app) -> None:
     app.add_handler(CallbackQueryHandler(run_code_sample, pattern=r"^runc:\d+$"))
     app.add_handler(CallbackQueryHandler(quiz_start, pattern=r"^qz_start:\d+$"))
     app.add_handler(CallbackQueryHandler(quiz_option, pattern=r"^qopt:\d+:\d+$"))
+    app.add_handler(CallbackQueryHandler(quiz_confirm, pattern=r"^qconfirm$"))
+    app.add_handler(CallbackQueryHandler(quiz_noop, pattern=r"^qnoop$"))
     app.add_handler(CallbackQueryHandler(quiz_nav, pattern=r"^q(next|prev)$"))
+    app.add_handler(CallbackQueryHandler(quiz_review, pattern=r"^qreview$"))
     app.add_handler(CallbackQueryHandler(quiz_finish, pattern=r"^qfinish$"))
-    app.add_handler(CallbackQueryHandler(quiz_result, pattern=r"^qresult$"))
 

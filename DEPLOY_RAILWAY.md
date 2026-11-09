@@ -169,7 +169,9 @@ GET https://<your-service>.up.railway.app/health
 | `ADMIN_IDS` | `5444436820` | ⭐ **معرّفك الرقمي — بدونه أوامر المشرف لا تعمل** |
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` | ⭐ **بدونه البيانات في SQLite مؤقتة وتضيع** |
 | `AI_FREE_MODE` | `1` | الوضع المجاني |
-| `AI_PROVIDER_ORDER` | `gemini,groq,openrouter` | ترتيب المزوّدين |
+| `AI_PROVIDER_ORDER` | `gemini,groq,openrouter,extra` | ترتيب المزوّدين |
+| `GROQ_MODEL` | `qwen/qwen3.8-27b` | يدعم JSON عمليا |
+| `OPENROUTER_MODEL` | `cohere/north-mini-code:free` | موديل مجاني عامل |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | ⚠️ `2.5-flash-lite` لم يعد متاحا |
 | `GEMINI_FALLBACK_MODEL` | `gemini-3.8-flash` | بديل عند رفض اسم الموديل |
 | `GEMINI_MODEL_CHAIN` | `gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash,gemini-3.1-flash-lite` | سلسلة تجريب تلقائي |

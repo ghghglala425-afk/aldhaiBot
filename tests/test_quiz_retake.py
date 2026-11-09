@@ -68,7 +68,10 @@ def _seed() -> tuple[int, int, int, int, int, int]:
             quiz = Quiz(lesson_id=lesson.id)
             s.add(quiz)
             await s.flush()
-            q = Question(quiz_id=quiz.id, text="س؟", kind="single", points=1, order_index=1)
+            q = Question(
+                quiz_id=quiz.id, text="س؟", kind="single", points=1, order_index=1,
+                explanation="لأن الخيار الأول هو الصحيح.",
+            )
             s.add(q)
             await s.flush()
             good = Option(question_id=q.id, text="صح", is_correct=True, order_index=1)
@@ -78,6 +81,146 @@ def _seed() -> tuple[int, int, int, int, int, int]:
             return user.id, lesson.id, q.id, good.id, bad.id, following.id
 
     return asyncio.run(_go())
+
+
+class _FakeMessage:
+    """رسالة تيليجرام وهمية تلتقط النصوص بدل الإرسال الفعلي."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self.markups: list[object] = []
+
+    async def edit_text(self, text, **kwargs):
+        self.texts.append(text)
+        self.markups.append(kwargs.get("reply_markup"))
+
+    async def reply_text(self, text, **kwargs):
+        self.texts.append(text)
+        self.markups.append(kwargs.get("reply_markup"))
+
+
+class _FakeQuery:
+    def __init__(self, data: str, message: _FakeMessage) -> None:
+        self.data = data
+        self.message = message
+        self.answers: list[tuple[str, bool]] = []
+
+    async def answer(self, text: str = "", show_alert: bool = False, **kwargs):
+        self.answers.append((text, show_alert))
+
+
+def _fake_update(data: str) -> tuple[SimpleNamespace, _FakeMessage, _FakeQuery]:
+    msg = _FakeMessage()
+    query = _FakeQuery(data, msg)
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_message=msg,
+        effective_user=SimpleNamespace(id=555002),
+        effective_chat=SimpleNamespace(id=999),
+    )
+    return update, msg, query
+
+
+def test_wrong_answer_shows_feedback_and_keeps_session() -> None:
+    _reset_db()
+    try:
+        _uid, lesson_id, qid, _good, bad, _nxt = _seed()
+        import app.handlers.learn as learn
+
+        update, msg, _query = _fake_update(f"qopt:{qid}:{bad}")
+        context = SimpleNamespace(
+            user_data={
+                "quiz": {
+                    "lesson_id": lesson_id,
+                    "qids": [qid],
+                    "i": 0,
+                    "resp": {},
+                    "revealed": [],
+                }
+            },
+            bot=object(),
+        )
+        asyncio.run(learn.quiz_option(update, context))
+
+        last = msg.texts[-1]
+        assert "غير صحيحة" in last
+        assert "الإجابة الصحيحة" in last
+        assert "التعليل" in last
+        # الجلسة لم تُغلق بعد الإجابة الخاطئة.
+        assert "quiz" in context.user_data
+        assert qid in context.user_data["quiz"]["revealed"]
+    finally:
+        _reset_db()
+
+
+def test_failed_finish_keeps_session_and_does_not_open_next(monkeypatch) -> None:
+    _reset_db()
+    try:
+        _uid, lesson_id, qid, _good, bad, _nxt = _seed()
+        import app.handlers.learn as learn
+
+        opened: list[int] = []
+
+        async def _fake_display(bot, chat_id, lid, **kw):
+            opened.append(lid)
+
+        monkeypatch.setattr(learn, "_display_and_build", _fake_display)
+
+        update, msg, _query = _fake_update("qfinish")
+        context = SimpleNamespace(
+            user_data={
+                "quiz": {
+                    "lesson_id": lesson_id,
+                    "qids": [qid],
+                    "i": 0,
+                    "resp": {qid: [bad]},
+                    "revealed": [qid],
+                }
+            },
+            bot=object(),
+        )
+        asyncio.run(learn.quiz_finish(update, context))
+
+        assert any("لم تجتز" in t for t in msg.texts)
+        assert "quiz" in context.user_data, "session must stay open after failure"
+        assert opened == [], "must not auto-open next lesson on failure"
+    finally:
+        _reset_db()
+
+
+def test_passing_finish_opens_next_lesson_automatically(monkeypatch) -> None:
+    _reset_db()
+    try:
+        user_id, lesson_id, qid, good, _bad, next_id = _seed()
+        import app.handlers.learn as learn
+
+        opened: list[int] = []
+
+        async def _fake_display(bot, chat_id, lid, **kw):
+            opened.append(lid)
+
+        monkeypatch.setattr(learn, "_display_and_build", _fake_display)
+
+        update, msg, _query = _fake_update("qfinish")
+        context = SimpleNamespace(
+            user_data={
+                "quiz": {
+                    "lesson_id": lesson_id,
+                    "qids": [qid],
+                    "i": 0,
+                    "resp": {qid: [good]},
+                    "revealed": [qid],
+                }
+            },
+            bot=object(),
+        )
+        asyncio.run(learn.quiz_finish(update, context))
+
+        assert opened == [next_id], "next lesson must open automatically on pass"
+        assert "quiz" not in context.user_data
+        assert any("نجحت" in t for t in msg.texts)
+    finally:
+        _reset_db()
 
 
 def test_result_keyboard_has_next_retake_and_exercise() -> None:
@@ -145,13 +288,13 @@ def test_after_quiz_pass_opens_next_lesson(monkeypatch) -> None:
                 user = await s.get(User, user_id)
                 lesson = await s.get(Lesson, lesson_id)
                 await submit_quiz(s, user, lesson, {qid: [good]})
-                update = SimpleNamespace(
-                    effective_chat=SimpleNamespace(id=999),
-                    effective_user=SimpleNamespace(id=555002),
-                    effective_message=None,
-                )
-                context = SimpleNamespace(bot=object())
-                await learn._after_quiz_pass(update, context, lesson)
+            update = SimpleNamespace(
+                effective_chat=SimpleNamespace(id=999),
+                effective_user=SimpleNamespace(id=555002),
+                effective_message=None,
+            )
+            context = SimpleNamespace(bot=object())
+            await learn._after_quiz_pass(update, context, lesson_id)
 
         asyncio.run(_go())
         assert calls, "must open the next lesson after passing"
