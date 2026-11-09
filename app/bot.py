@@ -225,6 +225,8 @@ async def post_init(app: Application) -> None:
 
     _db_state["ready"] = True
     log.info("✅ الخدمة جاهزة.")
+    # بعد اكتمال الزرع/الإصلاح نُشغّل API الداخلية لخدمة Mini App
+    _start_internal_api()
 
     setup_jobs(app)
     from pipeline import jobs
@@ -388,6 +390,60 @@ def _detect_api_base(own_host: str, mini_url: str) -> str:
 
 
 _api_base = ""
+# هل نشغّل خدمة API داخلية في نفس الحاوية؟ (عندما لا توجد خدمة API خارجية)
+_internal_api_enabled = False
+_internal_api_proc = None
+
+
+def _internal_api_base() -> str:
+    """عنوان خدمة الـAPI الداخلية (localhost فقط)."""
+    port = (os.environ.get("INTERNAL_API_PORT") or "8001").strip()
+    if not port.isdigit():
+        port = "8001"
+    return f"http://127.0.0.1:{port}"
+
+
+def _start_internal_api() -> None:
+    """يشغّل FastAPI في عملية فرعية على localhost (بلا منفذ عام).
+
+    الهدف: يعمل Mini App عبر نفس نطاق البوت بلا حاجة لخدمة Railway ثانية.
+    العملية منفصلة لتفادي تعارض حلقة الأحداث مع محرّك SQLAlchemy.
+    """
+    global _internal_api_proc
+    if _internal_api_proc is not None or not _internal_api_enabled:
+        return
+    import subprocess
+    import sys
+
+    port = _internal_api_base().rsplit(":", 1)[-1]
+    cmd = [
+        sys.executable, "-m", "uvicorn", "api.main:app",
+        "--host", "127.0.0.1", "--port", port, "--log-level", "warning",
+    ]
+    try:
+        _internal_api_proc = subprocess.Popen(cmd, env=os.environ.copy())
+        import atexit
+
+        atexit.register(_stop_internal_api)
+        log.info("خادم API داخلي يعمل على 127.0.0.1:%s", port)
+    except Exception as e:  # noqa: BLE001
+        _internal_api_proc = None
+        log.warning("تعذّر تشغيل خادم API الداخلي: %s", e)
+
+
+def _stop_internal_api() -> None:
+    global _internal_api_proc
+    proc, _internal_api_proc = _internal_api_proc, None
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _detect_platform() -> None:
@@ -397,7 +453,7 @@ def _detect_platform() -> None:
       - PORT                  → المنفذ الذي يجب الاستماع عليه
       - RAILWAY_PUBLIC_DOMAIN → النطاق العام للخدمة (لـ webhook و Mini App)
     """
-    global _api_base
+    global _api_base, _internal_api_enabled
     port = os.environ.get("PORT", "").strip()
     if port.isdigit():
         settings.WEBHOOK_PORT = int(port)
@@ -413,6 +469,13 @@ def _detect_platform() -> None:
     mini = (settings.MINIAPP_URL or "").strip().rstrip("/")
     own_host = domain or _host_of(settings.WEBHOOK_URL) or _host_of(mini)
     _api_base = _detect_api_base(own_host, mini)
+    _internal_api_enabled = False
+    if not _api_base and os.environ.get("INTERNAL_API", "1") != "0":
+        # لا توجد خدمة API خارجية → نشغّل نسخة داخلية على localhost
+        # ويُمرّر البوت طلبات /api/* إليها. يمنح Mini App واجهة عاملة
+        # بلا حاجة لخدمة Railway إضافية.
+        _api_base = _internal_api_base()
+        _internal_api_enabled = True
 
     mini_host = _host_of(mini)
     if not mini:
