@@ -433,11 +433,35 @@ async def _run_judge0(language: str, code: str, timeout: int) -> RunResult:
     )
 
 
+_INVISIBLE = dict.fromkeys(map(ord, "\ufeff\u200b\u200c\u200d\u200e\u200f"), None)
+
+
+def clean_code(code: str) -> str:
+    """ينظّف الكود المُلصق: أسوار Markdown + محارف مخفية + أسطر فارغة زائدة.
+
+    المستخدم ينسخ الكود من الدرس غالبا مع ```python … ``` فيفشل التنفيذ
+    بخطأ صياغة لا علاقة له بالكود نفسه.
+    """
+    text = (code or "").replace("\r\n", "\n").replace("\r", "\n").translate(_INVISIBLE)
+    text = text.strip()
+    if text.startswith("```"):
+        first, sep, rest = text.partition("\n")
+        # السطر الأول قد يكون ``` أو ```python، ويُهمل إن كان سطر إغلاق مفرد.
+        text = rest if sep else ""
+        text = text.rstrip()
+        if text.endswith("```"):
+            text = text[:-3]
+    return text.strip("\n")
+
+
 async def run_code(
     language: str, code: str, *, timeout: int | None = None, exec_enabled: bool | None = None
 ) -> RunResult:
     global _EXEC_WAITING, _EXEC_FAIL_STREAK, _EXEC_OPEN_UNTIL
 
+    code = clean_code(code)
+    if not code.strip():
+        return RunResult(status="skipped", engine="none", detail="لم يصل كود صالح للتنفيذ")
     timeout = timeout or settings.SANDBOX_TIMEOUT
     do_exec = settings.VERIFY_EXEC if exec_enabled is None else exec_enabled
     runner = _RUN.get(language)
