@@ -61,6 +61,9 @@ class User(Base):
     last_seen: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
     # آخر تذكير دراسي أُرسل لهذا المستخدم (نمنع التكرار قبل مرور 23 ساعة)
     last_reminder_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True))
+    # المسار/الكورس الذي اختاره المستخدم — يوجّه الدرس اليومي وتذكيراته
+    active_path_slug: Mapped[Optional[str]] = mapped_column(String(80), index=True)
+    active_course_id: Mapped[Optional[int]] = mapped_column(Integer, index=True)
 
     sessions: Mapped[list["Session"]] = relationship(back_populates="user")
     progress: Mapped[list["Progress"]] = relationship(back_populates="user")

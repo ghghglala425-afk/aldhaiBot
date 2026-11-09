@@ -361,6 +361,8 @@ async def _apply_column_migrations(conn) -> None:
         ("lessons", "est_reading_minutes", "INTEGER NOT NULL DEFAULT 0"),
         ("progress", "started_at", "TIMESTAMP"),
         ("users", "last_reminder_at", "TIMESTAMP"),
+        ("users", "active_path_slug", "VARCHAR(80)"),
+        ("users", "active_course_id", "INTEGER"),
     ]
 
     is_pg = not _DATABASE_URL.startswith("sqlite")

@@ -18,6 +18,7 @@ from core.models import (
     DailyAssignment,
     Hint,
     Lab,
+    LearningPath,
     Lesson,
     Option,
     Progress,
@@ -343,27 +344,102 @@ async def reveal_hint(session: AsyncSession, user: User, lab: Lab, index: int) -
 # ---------------------------------------------------------------------
 #  الدرس اليومي
 # ---------------------------------------------------------------------
+async def selected_courses(session: AsyncSession, user: User) -> list[Course]:
+    """الكورسات التي اختارها المستخدم (مسار كامل أو كورس واحد).
+
+    القائمة مرتّبة بترتيب المسار، فارغة إذا لم يختر شيئا بعد.
+    """
+    if user.active_path_slug:
+        path = await session.scalar(
+            select(LearningPath).where(LearningPath.slug == user.active_path_slug)
+        )
+        if path and path.course_slugs:
+            res = await session.execute(
+                select(Course).where(Course.slug.in_(list(path.course_slugs)))
+            )
+            by_slug = {c.slug: c for c in res.scalars().all()}
+            ordered = [by_slug[s] for s in path.course_slugs if s in by_slug]
+            if ordered:
+                return ordered
+    if user.active_course_id:
+        course = await session.get(Course, user.active_course_id)
+        if course:
+            return [course]
+    return []
+
+
+async def next_study_lesson(
+    session: AsyncSession, user: User, courses: list[Course] | None = None
+) -> Lesson | None:
+    """أول درس غير مكتمل ومتاح (أو قيد التقدّم) في الكورسات المعطاة.
+
+    ``courses=None`` يعني: كورسات المستخدم المختارة، وإلا كل الكورسات المنشورة.
+    """
+    target = courses if courses is not None else await selected_courses(session, user)
+    if not target:
+        res = await session.execute(
+            select(Course)
+            .where(Course.is_published.is_(True))
+            .order_by(Course.order_index, Course.id)
+        )
+        target = list(res.scalars().all())
+    for course in target:
+        if course is None:
+            continue
+        for row in await status_map(session, user, course.id):
+            if row["status"] in (STATUS_AVAILABLE, STATUS_IN_PROGRESS):
+                return row["lesson"]
+    return None
+
+
+async def passed_today(session: AsyncSession, user_id: int) -> int:
+    """عدد الدروس التي أُنجزت اليوم (بلا سقف — للتشجيع فقط)."""
+    now = dt.datetime.now(dt.timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(
+        await session.scalar(
+            select(func.count())
+            .select_from(Progress)
+            .where(
+                Progress.user_id == user_id,
+                Progress.status == STATUS_PASSED,
+                func.coalesce(Progress.completed_at, Progress.updated_at) >= start,
+            )
+        )
+        or 0
+    )
+
+
 async def todays_daily(session: AsyncSession, user: User, course_id: int | None = None) -> Lesson | None:
     today = dt.date.today()
     existing = await session.scalar(
-        select(DailyAssignment).where(DailyAssignment.user_id == user.id, DailyAssignment.date == today)
+        select(DailyAssignment).where(
+            DailyAssignment.user_id == user.id, DailyAssignment.date == today
+        )
     )
-    if existing:
-        return await session.get(Lesson, existing.lesson_id)
+    if course_id:
+        course = await session.get(Course, course_id)
+        courses = [course] if course else []
+    else:
+        courses = await selected_courses(session, user)
+    if not courses:
+        courses = None  # fallback: كل الكورسات المنشورة
 
-    # اختر أول درس متاح غير مُكتمل
-    stmt = select(Course).where(Course.is_published.is_(True)).order_by(Course.order_index)
-    courses = list((await session.execute(stmt)).scalars().all())
-    for course in courses:
-        if course_id and course.id != course_id:
-            continue
-        for row in await status_map(session, user, course.id):
-            if row["status"] == STATUS_AVAILABLE:
-                lesson = row["lesson"]
-                session.add(DailyAssignment(user_id=user.id, lesson_id=lesson.id, date=today))
-                await session.commit()
-                return lesson
-    return None
+    lesson = await next_study_lesson(session, user, courses)
+    if not lesson:
+        return None
+
+    if existing:
+        # قد يتغيّر درس اليوم بعد اختيار مسار آخر أو بعد اجتياز الدرس السابق.
+        if existing.lesson_id != lesson.id:
+            existing.lesson_id = lesson.id
+            existing.done = False
+            await session.commit()
+        return lesson
+
+    session.add(DailyAssignment(user_id=user.id, lesson_id=lesson.id, date=today))
+    await session.commit()
+    return lesson
 
 
 # ---------------------------------------------------------------------

@@ -543,6 +543,9 @@ async def _render_lesson(
         ]
     )
     buttons.append(
+        [InlineKeyboardButton("🤖 اسأل عن الدرس", callback_data=f"askl:{lesson_id}")]
+    )
+    buttons.append(
         [
             InlineKeyboardButton("🎒 مركز التعلّم", callback_data="x:review"),
             InlineKeyboardButton("🔬 غوص عميق", callback_data="x:deep"),

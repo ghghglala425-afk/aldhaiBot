@@ -53,7 +53,17 @@ async def path_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
     if d["certificate"]:
         text += f"\n🎓 شهادة المسار: `{d['certificate']}`"
-    await tg.edit_text(q, text, parse_mode="Markdown")
+    await tg.edit_text(
+        q,
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🎯 اجعله مساري وابدأ الآن", callback_data=f"dpath:{slug}")],
+                [InlineKeyboardButton("📚 كل الكورسات", callback_data="courses:0")],
+            ]
+        ),
+    )
 
 
 def register_handlers(app) -> None:

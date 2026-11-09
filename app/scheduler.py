@@ -41,17 +41,20 @@ async def _send_daily(context: ContextTypes.DEFAULT_TYPE) -> None:
             if not lesson:
                 continue
             day = await lesson_day(s, lesson)
-            head = "🎯 *درس اليوم*" + (f" — اليوم {day}" if day else "")
+            head = "🎯 <b>درس اليوم</b>" + (f" — اليوم {day}" if day else "")
             await context.bot.send_message(
                 tg_id,
-                f"{head}\n\n📖 {lesson.title}\n{(lesson.summary or '')[:180]}",
-                parse_mode=ParseMode.MARKDOWN,
+                f"{head}\n\n📖 <b>{html.escape(lesson.title)}</b>\n"
+                f"{html.escape((lesson.summary or '')[:180])}\n\n"
+                f"<i>اجتز الاختبار بـ {settings.QUIZ_PASS_PERCENT}% لفتح التالي — "
+                "ويمكنك دراسة أكثر من 10 دروس اليوم.</i>",
+                parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(
                     [
                         [InlineKeyboardButton("▶️ افتح الدرس", callback_data=f"lesson:{lesson.id}")],
                         [
-                            InlineKeyboardButton("🧪 تمرين معزول", callback_data=f"exs:{lesson.id}"),
-                            InlineKeyboardButton("📎 الملحقات", callback_data=f"latt:{lesson.id}"),
+                            InlineKeyboardButton("🧠 الاختبار", callback_data=f"qz_start:{lesson.id}"),
+                            InlineKeyboardButton("📚 خطة دروسي", callback_data="dplan:0"),
                         ],
                     ]
                 ),

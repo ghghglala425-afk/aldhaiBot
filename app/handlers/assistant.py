@@ -147,7 +147,25 @@ async def _answer(update: Update, question: str) -> None:
     await reply_long(update.effective_message, f"🤖 {answer}")
 
 
+async def _context_prompt(session, lesson_id: int, question: str) -> str:
+    """يضيف سياق الدرس إلى سؤال المستخدم كي تكون الإجابة دقيقة."""
+    lesson = await session.get(Lesson, lesson_id)
+    if not lesson:
+        return question
+    body = (lesson.content_md or "")[:3500]
+    points = "\n".join(f"• {k}" for k in (lesson.key_points or [])[:12])
+    return (
+        f"سؤال المستخدم عن درس «{lesson.title}»:\n{question}\n\n"
+        "سياق الدرس (استخدمه عند الحاجة فقط):\n"
+        f"الملخص: {lesson.summary or ''}\n"
+        f"النقاط الأساسية:\n{points}\n"
+        f"المحتوى:\n{body}\n\n"
+        "أجب عن سؤال المستخدم تحديدا، واربط الإجابة بالدرس، وأضف مثالا عمليا عند الحاجة."
+    )
+
+
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("ask_lesson_id", None)
     question = (update.message.text or "").partition(" ")[2].strip()
     if question:
         await _answer(update, question)
@@ -156,8 +174,32 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return AWAIT_Q
 
 
+async def contextual_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """زر «اسأل عن الدرس»: يفتح المساعد بسؤال مخصّص لسياق الدرس."""
+    q = update.callback_query
+    lesson_id = int(q.data.split(":")[1])
+    context.user_data["ask_lesson_id"] = lesson_id
+    await q.answer("اكتب سؤالك عن الدرس 🤖")
+    async with SessionLocal() as s:
+        lesson = await s.get(Lesson, lesson_id)
+        title = lesson.title if lesson else ""
+    await tg.send_text(
+        q.message,
+        f"🤖 <b>اسأل عن الدرس:</b> {title}\n"
+        "<i>اكتب سؤالك في رسالة واحدة، وسأجيبك مع مثال عملي "
+        "(اكتب /cancel للإلغاء).</i>",
+        parse_mode="HTML",
+    )
+    return AWAIT_Q
+
+
 async def got_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await _answer(update, (update.message.text or "").strip())
+    question = (update.message.text or "").strip()
+    lesson_id = context.user_data.pop("ask_lesson_id", None)
+    if lesson_id:
+        async with SessionLocal() as s:
+            question = await _context_prompt(s, lesson_id, question)
+    await _answer(update, question)
     return ConversationHandler.END
 
 
@@ -244,6 +286,7 @@ async def explain_code(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("ask_lesson_id", None)
     await tg.send_text(update.message, "تم الإلغاء.")
     return ConversationHandler.END
 
@@ -252,6 +295,7 @@ def ask_conversation() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[
             CommandHandler("ask", ask_cmd),
+            CallbackQueryHandler(contextual_ask, pattern=r"^askl:\d+$"),
             MessageHandler(filters.Regex("^🤖 المساعد$"), ask_cmd),
         ],
         states={AWAIT_Q: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_question)]},
