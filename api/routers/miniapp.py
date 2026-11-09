@@ -41,6 +41,9 @@ q{cursor:pointer}
 .opt{background:#141b30;border:1px solid #222c4a;border-radius:12px;padding:10px;margin:6px 0;display:block}
 .opt.sel{border-color:var(--acc);background:#12303a}
 .q{margin:14px 0}
+.fb-ok{color:var(--ok);font-weight:700;margin-top:6px}
+.fb-bad{color:var(--bad);font-weight:700;margin-top:6px}
+.fb-exp{color:var(--mut);font-size:13px;margin-top:4px;border-inline-start:3px solid #2a3355;padding-inline-start:8px}
 .res{font-size:18px;font-weight:800;margin:10px 0}
 .bar{background:#0b1020;border:1px solid #222c4a;border-radius:20px;height:10px;overflow:hidden;margin:6px 0}
 .bar span{display:block;height:100%;background:linear-gradient(90deg,var(--acc),#4da3ff)}
@@ -358,7 +361,27 @@ async function submitQuiz(lessonId){
   });
   try{
     const r = await api(`/api/lessons/${lessonId}/attempt`, {method:'POST', body: JSON.stringify({responses})});
-    document.getElementById('qres').textContent = (r.passed?'🎉 نجحت ':'😅 رسبت ')+r.score+'%';
+    const threshold = r.threshold ?? 50;
+    document.getElementById('qres').textContent =
+      (r.passed?'🎉 نجحت ':'😅 لم تنجح ')+r.score+'% (العتبة '+threshold+'%)'+(r.passed?'':' — يمكنك إعادة المحاولة');
+    const byQ = {};
+    (r.detail||[]).forEach(d=>{ byQ[d.question_id]=d; });
+    const qEls = document.querySelectorAll('#quiz .q');
+    window.__quiz.forEach((q,i)=>{
+      const d = byQ[q.id]; const qEl = qEls[i];
+      if (!d || !qEl) return;
+      let fb = qEl.querySelector('.fb');
+      if (!fb){ fb=document.createElement('div'); fb.className='fb'; qEl.appendChild(fb); }
+      const correctTexts = (d.correct_ids||[]).map(id=>{
+        const o=(q.options||[]).find(x=>x.id===id);
+        return o?o.text:('#'+id);
+      });
+      const exp = d.explanation ? `<div class="fb-exp">💡 ${esc(d.explanation)}</div>` : '';
+      fb.innerHTML = d.correct
+        ? `<div class="fb-ok">✅ إجابة صحيحة</div>${exp}`
+        : `<div class="fb-bad">❌ إجابة خاطئة</div>
+           <div class="fb-exp">الإجابة الصحيحة: ${correctTexts.map(esc).join('، ')||'—'}</div>${exp}`;
+    });
     await refreshMe();
   }catch(e){ if(e&&e.handled) return; document.getElementById('qres').textContent = e.message; }
 }
