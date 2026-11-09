@@ -391,6 +391,8 @@ def _parse_gemini(data: dict) -> tuple[str, int]:
         text = "".join(p.get("text", "") for p in parts)
     except Exception as e:  # noqa: BLE001
         raise ProviderError(f"استجابة Gemini غير متوقعة: {e}") from e
+    if not (text or "").strip():
+        raise ProviderError("رد فارغ من Gemini")
     usage = data.get("usageMetadata") or {}
     tokens = int(usage.get("totalTokenCount") or 0)
     return text, tokens
@@ -398,12 +400,19 @@ def _parse_gemini(data: dict) -> tuple[str, int]:
 
 def _parse_openai(data: dict) -> tuple[str, int]:
     try:
-        text = data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
     except Exception as e:  # noqa: BLE001
         raise ProviderError(f"استجابة غير متوقعة: {e}") from e
     usage = data.get("usage") or {}
     tokens = int(usage.get("total_tokens") or 0)
-    return text or "", tokens
+    text = (message.get("content") or "").strip()
+    if not text:
+        # بعض نماذج التفكير (gpt-oss) تضع الخرج في الحقل reasoning.
+        text = (message.get("reasoning") or message.get("reasoning_content") or "").strip()
+    if not text:
+        # رد فارغ = فشل للمزوّد حتى يجرّب المُنسّق النموذج/المزوّد التالي.
+        raise ProviderError("رد فارغ من المزوّد")
+    return text, tokens
 
 
 def _retry_after(resp: httpx.Response) -> float:

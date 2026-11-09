@@ -64,6 +64,32 @@ class TestParsing:
         assert text == "y"
         assert tokens == 0
 
+    def test_parse_openai_empty_content_raises(self) -> None:
+        """الرد الفارغ فشل: يجب أن يجرّب المُنسّق مزوّدا آخر بدل إرسال رسالة فارغة."""
+        import pytest
+
+        from pipeline.providers import ProviderError
+
+        with pytest.raises(ProviderError):
+            _parse_openai({"choices": [{"message": {"content": ""}}]})
+
+    def test_parse_openai_uses_reasoning_when_content_empty(self) -> None:
+        data = {
+            "choices": [{"message": {"content": "", "reasoning": "thinking text"}}],
+            "usage": {"total_tokens": 9},
+        }
+        text, tokens = _parse_openai(data)
+        assert text == "thinking text"
+        assert tokens == 9
+
+    def test_parse_gemini_empty_raises(self) -> None:
+        import pytest
+
+        from pipeline.providers import ProviderError
+
+        with pytest.raises(ProviderError):
+            _parse_gemini({"candidates": [{"content": {"parts": [{"text": ""}]}}]})
+
 
 class TestRetryAfter:
     def test_retry_after_valid(self) -> None:

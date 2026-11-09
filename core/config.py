@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     # لكل نموذج في Groq حصة يومية مستقلة على الخطة المجانية؛ السلسلة
     # تعطي مساحة أكبر تلقائيا عند نفاد نموذج قبل بقية المزوّدين.
     GROQ_MODEL_CHAIN: str = (
-        "qwen/qwen3.8-27b,openai/gpt-oss-20b,allam-2-7b,openai/gpt-oss-120b"
+        "qwen/qwen3.8-27b,allam-2-7b,openai/gpt-oss-20b,openai/gpt-oss-120b"
     )
     GROQ_RPM: int = 30
     GROQ_RPD: int = 1_000
