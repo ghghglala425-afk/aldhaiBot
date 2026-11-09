@@ -277,7 +277,16 @@ async def seed_demo_course() -> int:
         session.add(quiz)
         await session.flush()
 
-        q1 = Question(quiz_id=quiz.id, text="ما الأمر الذي يطبع نصا في بايثون؟", kind="single", order_index=1)
+        q1 = Question(
+            quiz_id=quiz.id,
+            text="ما الأمر الذي يطبع نصا في بايثون؟",
+            kind="single",
+            order_index=1,
+            explanation=(
+                "الدالة print() تكتب النص إلى الخرج القياسي. أما echo فهو أمر صدفة "
+                "وليست دالة بايثون، وshow/log غير معرّفتين."
+            ),
+        )
         session.add(q1)
         await session.flush()
         for idx, (txt, corr) in enumerate(
@@ -285,7 +294,16 @@ async def seed_demo_course() -> int:
         ):
             session.add(Option(question_id=q1.id, text=txt, is_correct=corr, order_index=idx))
 
-        q2 = Question(quiz_id=quiz.id, text="أي مكتبة تُستخدم لتجزئة SHA-256؟", kind="single", order_index=2)
+        q2 = Question(
+            quiz_id=quiz.id,
+            text="أي مكتبة تُستخدم لتجزئة SHA-256؟",
+            kind="single",
+            order_index=2,
+            explanation=(
+                "مكتبة hashlib القياسية توفّر sha256() وغيرها من دوال التجزئة. "
+                "crypto2/hash256/secure أسماء غير موجودة في المكتبة القياسية."
+            ),
+        )
         session.add(q2)
         await session.flush()
         for idx, (txt, corr) in enumerate(
@@ -522,23 +540,57 @@ async def _languages_present() -> bool:
 
 
 async def repair_demo_lesson() -> bool:
-    """يستبدل محتوى الدرس التجريبي القصير بمحتوى كامل (آمن للتكرار)."""
+    """يستبدل محتوى الدرس التجريبي القصير ويضيف تعليل الأسئلة الناقص.
+
+    آمن للتكرار: لا يغيّر شيئا إن كان المحتوى والتعليل مكتملين.
+    """
+    from core.models import Question, Quiz
+
+    explanations = {
+        "ما الأمر الذي يطبع نصا في بايثون؟": (
+            "الدالة print() تكتب النص إلى الخرج القياسي. أما echo فهو أمر صدفة "
+            "وليست دالة بايثون، وshow/log غير معرّفتين."
+        ),
+        "أي مكتبة تُستخدم لتجزئة SHA-256؟": (
+            "مكتبة hashlib القياسية توفّر sha256() وغيرها من دوال التجزئة. "
+            "crypto2/hash256/secure أسماء غير موجودة في المكتبة القياسية."
+        ),
+    }
+
+    changed = False
     async with SessionLocal() as session:
         lesson = await session.scalar(
             select(Lesson).where(Lesson.slug == "hello-security")
         )
         if not lesson:
             return False
-        if len((lesson.content_md or "").strip()) >= 200:
-            return False
-        lesson.content_md = DEMO_LESSON_CONTENT
-        if not (lesson.summary or "").strip():
-            lesson.summary = (
-                "تعرّف على بايثون وأدواته الأساسية عبر أمثلة عملية مشروحة."
-            )
-        await session.commit()
-        log.info("حُدّث محتوى الدرس التجريبي hello-security.")
-        return True
+        if len((lesson.content_md or "").strip()) < 200:
+            lesson.content_md = DEMO_LESSON_CONTENT
+            if not (lesson.summary or "").strip():
+                lesson.summary = (
+                    "تعرّف على بايثون وأدواته الأساسية عبر أمثلة عملية مشروحة."
+                )
+            changed = True
+            log.info("حُدّث محتوى الدرس التجريبي hello-security.")
+
+        quiz = await session.scalar(select(Quiz).where(Quiz.lesson_id == lesson.id))
+        if quiz:
+            questions = (
+                await session.execute(select(Question).where(Question.quiz_id == quiz.id))
+            ).scalars()
+            for q in questions:
+                if (q.explanation or "").strip():
+                    continue
+                text = explanations.get((q.text or "").strip())
+                if text:
+                    q.explanation = text
+                    changed = True
+            if changed:
+                log.info("حُدّث تعليل أسئلة الدرس التجريبي.")
+
+        if changed:
+            await session.commit()
+        return changed
 
 
 async def ensure_seeded() -> bool:

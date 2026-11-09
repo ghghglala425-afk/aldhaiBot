@@ -20,7 +20,7 @@ def test_demo_content_is_substantial_and_clean() -> None:
 
 def test_repair_demo_lesson_updates_short_content() -> None:
     from core.db import engine, init_db
-    from core.models import Base, Course, Lesson, Stage
+    from core.models import Base, Course, Lesson, Option, Question, Quiz, Stage
 
     async def _reset() -> None:
         async with engine.begin() as conn:
@@ -48,15 +48,32 @@ def test_repair_demo_lesson_updates_short_content() -> None:
                 order_index=1, status="published",
             )
             s.add(lesson)
+            await s.flush()
+            quiz = Quiz(lesson_id=lesson.id, pass_score=70, shuffle=True)
+            s.add(quiz)
+            await s.flush()
+            q = Question(
+                quiz_id=quiz.id, text="ما الأمر الذي يطبع نصا في بايثون؟",
+                kind="single", order_index=1,
+            )
+            s.add(q)
+            await s.flush()
+            s.add(Option(question_id=q.id, text="print()", is_correct=True, order_index=0))
+            s.add(Option(question_id=q.id, text="echo", is_correct=False, order_index=1))
             await s.commit()
             return lesson.id
 
-    async def _content(lesson_id: int) -> str:
+    async def _read(lesson_id: int) -> tuple[str, str]:
         from core.db import SessionLocal
 
         async with SessionLocal() as s:
             row = await s.scalar(select(Lesson).where(Lesson.id == lesson_id))
-            return row.content_md or ""
+            q = await s.scalar(
+                select(Question).join(Quiz, Quiz.id == Question.quiz_id).where(
+                    Quiz.lesson_id == lesson_id
+                )
+            )
+            return row.content_md or "", (q.explanation or "")
 
     asyncio.run(_reset())
     try:
@@ -66,8 +83,9 @@ def test_repair_demo_lesson_updates_short_content() -> None:
         from pipeline.seed import repair_demo_lesson
 
         assert asyncio.run(repair_demo_lesson()) is True
-        content = asyncio.run(_content(lesson_id))
+        content, explanation = asyncio.run(_read(lesson_id))
         assert len(content.strip()) >= 400
+        assert "print()" in explanation
 
         # إعادة التشغيل لا تغيّر شيئا
         assert asyncio.run(repair_demo_lesson()) is False
