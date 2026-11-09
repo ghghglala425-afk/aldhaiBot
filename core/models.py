@@ -238,7 +238,10 @@ class Quiz(Base):
 
     lesson: Mapped["Lesson"] = relationship(back_populates="quizzes")
     questions: Mapped[list["Question"]] = relationship(
-        back_populates="quiz", order_by="Question.order_index"
+        back_populates="quiz",
+        order_by="Question.order_index",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -255,7 +258,10 @@ class Question(Base):
 
     quiz: Mapped["Quiz"] = relationship(back_populates="questions")
     options: Mapped[list["Option"]] = relationship(
-        back_populates="question", order_by="Option.order_index"
+        back_populates="question",
+        order_by="Option.order_index",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
