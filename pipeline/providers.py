@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from core.config import settings
 from core.logging import get_logger
@@ -163,16 +163,53 @@ def build_providers(settings_override=None) -> list[ProviderSpec]:
 #  العدّاد اليومي (DB)
 # ---------------------------------------------------------------------
 async def _usage_row(session, provider: str) -> Any:
+    """يجلب صف العدّاد اليومي وينشئه بأمان حتى مع عدة عمّال متزامنين.
+
+    INSERT عادي هنا كان يسبّب `UniqueViolationError` عندما يبدأ عاملان
+    في نفس اللحظة (تزامن التوليد = 4). نستخدم `ON CONFLICT DO NOTHING`
+    ثم نعيد القراءة، مع غلاف savepoint كمسار احتياطي لأي لهجة أخرى.
+    """
     from core.models import AIUsage
 
     today = dt.date.today()
-    row = await session.scalar(
-        select(AIUsage).where(AIUsage.provider == provider, AIUsage.day == today)
-    )
+    key = (AIUsage.provider == provider, AIUsage.day == today)
+    row = await session.scalar(select(AIUsage).where(*key))
+    if row is not None:
+        return row
+
+    dialect = ""
+    try:
+        dialect = session.get_bind().dialect.name
+    except Exception:  # noqa: BLE001
+        dialect = ""
+
+    values = {"provider": provider, "day": today}
+    stmt = None
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as _insert
+
+        stmt = _insert(AIUsage).values(**values).on_conflict_do_nothing(
+            index_elements=[AIUsage.provider, AIUsage.day]
+        )
+    elif dialect == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert as _insert
+
+        stmt = _insert(AIUsage).values(**values).on_conflict_do_nothing(
+            index_elements=[AIUsage.provider, AIUsage.day]
+        )
+
+    if stmt is not None:
+        await session.execute(stmt)
+    else:
+        try:
+            async with session.begin_nested():
+                session.add(AIUsage(**values))
+        except Exception as e:  # noqa: BLE001
+            log.debug("تعذّر إنشاء عدّاد %s مباشرة: %s", provider, e)
+
+    row = await session.scalar(select(AIUsage).where(*key))
     if row is None:
-        row = AIUsage(provider=provider, day=today)
-        session.add(row)
-        await session.flush()
+        raise ProviderError(f"تعذّر إنشاء عدّاد استخدام المزوّد {provider}")
     return row
 
 
@@ -256,12 +293,20 @@ async def _can_call(session, spec: ProviderSpec) -> bool:
 
 
 async def _record(session, spec: ProviderSpec, tokens: int, *, error: bool = False) -> None:
+    """يزيد العدّاد ذرّيا (UPDATE ... SET x = x + 1) لتجنّب فقدان الزيادات."""
+    from core.models import AIUsage
+
     row = await _usage_row(session, spec.key_id)
-    row.requests = (row.requests or 0) + 1
-    row.tokens = (row.tokens or 0) + max(0, tokens)
-    if error:
-        row.errors = (row.errors or 0) + 1
-    row.updated_at = dt.datetime.now(dt.timezone.utc)
+    await session.execute(
+        update(AIUsage)
+        .where(AIUsage.id == row.id)
+        .values(
+            requests=AIUsage.requests + 1,
+            tokens=AIUsage.tokens + max(0, int(tokens)),
+            errors=AIUsage.errors + (1 if error else 0),
+            updated_at=dt.datetime.now(dt.timezone.utc),
+        )
+    )
     await session.commit()
 
 

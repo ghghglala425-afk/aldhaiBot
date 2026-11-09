@@ -229,6 +229,35 @@ class TestPerKeyState:
         assert asyncio.run(p._can_call(None, a)) is False
         assert asyncio.run(p._can_call(None, b)) is True
 
+    def test_usage_row_upsert_and_atomic_increment(self) -> None:
+        """إنشاء العدّاد مرتين لا يرفع UniqueViolation، والزيادة ذرّية."""
+        import asyncio
+
+        from sqlalchemy import delete, select
+
+        from core.db import SessionLocal, init_db
+        from core.models import AIUsage
+        from pipeline import providers as p
+
+        async def _go() -> tuple[int, int, int]:
+            await init_db()
+            spec = p.ProviderSpec("unit", "x", "m", "unit-key-12345678")
+            async with SessionLocal() as s:
+                await s.execute(delete(AIUsage).where(AIUsage.provider == spec.key_id))
+                await s.commit()
+                first = await p._usage_row(s, spec.key_id)
+                second = await p._usage_row(s, spec.key_id)
+                assert first.id == second.id
+                await p._record(s, spec, 12)
+                await p._record(s, spec, 8)
+                row = await s.scalar(
+                    select(AIUsage).where(AIUsage.provider == spec.key_id)
+                )
+                return row.requests, row.tokens, row.errors
+
+        requests, tokens, errors = asyncio.run(_go())
+        assert (requests, tokens, errors) == (2, 20, 0)
+
     def test_cooldown_is_shared_across_specs(self, monkeypatch) -> None:
         from pipeline import providers as p
 
