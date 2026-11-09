@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 
@@ -15,8 +16,42 @@ import jwt
 
 from core.config import settings
 
+log = logging.getLogger("security")
+
 _ITERATIONS = 240_000
 _ALGO = "sha256"
+
+# مفاتيح يعرفها أي قارئ للكود — تُرفض في الإنتاج.
+_INSECURE_KEYS = {"", "change-me", "change-me-with-a-long-random-string"}
+_MIN_KEY_BYTES = 32
+_ephemeral_key: str | None = None
+
+
+def secret_is_weak(key: str | None = None) -> bool:
+    """هل مفتاح التوقيع افتراضي/قصير؟ (لا يصلح للإنتاج)."""
+    raw = (settings.SECRET_KEY if key is None else key) or ""
+    return raw.strip() in _INSECURE_KEYS or len(raw.encode("utf-8")) < _MIN_KEY_BYTES
+
+
+def _jwt_key() -> str:
+    """مفتاح توقيع JWT.
+
+    في الإنتاج لا نوقّع أبدا بمفتاح افتراضي معروف (يمكن تزوير أي توكن به)؛
+    إن كان المفتاح ضعيفا نولّد مفتاحا عشوائيا لهذه العملية ونسجّل خطأ واضحا.
+    """
+    global _ephemeral_key
+    if not secret_is_weak():
+        return settings.SECRET_KEY
+    if settings.is_prod:
+        if _ephemeral_key is None:
+            _ephemeral_key = secrets.token_urlsafe(48)
+            log.error(
+                "SECRET_KEY ضعيف أو غير مضبوط في الإنتاج — تم توليد مفتاح مؤقت "
+                "لهذه العملية. اضبط SECRET_KEY (32 بايتا على الأقل) كي تبقى "
+                "جلسات التطبيق صالحة بعد إعادة التشغيل."
+            )
+        return _ephemeral_key
+    return settings.SECRET_KEY
 
 
 # ---------------------------------------------------------------------
@@ -62,13 +97,13 @@ def create_access_token(user_id: int, extra: dict | None = None) -> str:
     }
     if extra:
         payload.update(extra)
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(payload, _jwt_key(), algorithm=settings.JWT_ALGORITHM)
 
 
 def decode_access_token(token: str) -> dict | None:
     try:
         return jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+            token, _jwt_key(), algorithms=[settings.JWT_ALGORITHM]
         )
     except jwt.PyJWTError:
         return None
