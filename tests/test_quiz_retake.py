@@ -184,6 +184,18 @@ def test_failed_finish_keeps_session_and_does_not_open_next(monkeypatch) -> None
         assert any("لم تجتز" in t for t in msg.texts)
         assert "quiz" in context.user_data, "session must stay open after failure"
         assert opened == [], "must not auto-open next lesson on failure"
+
+        # إعادة الإرسال من أزرار قديمة لا تحتسب محاولة جديدة.
+        again, _msg2, query2 = _fake_update("qfinish")
+        asyncio.run(learn.quiz_finish(again, context))
+        assert query2.answers and query2.answers[-1][1] is True  # show_alert
+
+        async def _attempts() -> int:
+            async with SessionLocal() as s:
+                prog = await get_progress(s, _uid, lesson_id)
+                return prog.attempts_count
+
+        assert asyncio.run(_attempts()) == 1
     finally:
         _reset_db()
 

@@ -888,7 +888,14 @@ async def _render_question(message, context: ContextTypes.DEFAULT_TYPE) -> None:
         nav.append(InlineKeyboardButton("⬅️ السابق", callback_data="qprev"))
     if st["i"] < len(qids) - 1:
         nav.append(InlineKeyboardButton("التالي ➡️", callback_data="qnext"))
-    if len(st.get("revealed", [])) >= len(qids):
+    if st.get("submitted"):
+        # وضع المراجعة بعد الفشل: لا نعيد التصحيح من نفس المحاولة.
+        nav.append(
+            InlineKeyboardButton(
+                "🔁 إعادة المحاولة", callback_data=f"qz_start:{st['lesson_id']}"
+            )
+        )
+    elif len(st.get("revealed", [])) >= len(qids):
         nav.append(InlineKeyboardButton("🏁 النتيجة", callback_data="qfinish"))
     elif st["i"] == len(qids) - 1:
         nav.append(InlineKeyboardButton("🏁 إنهاء", callback_data="qfinish"))
@@ -1054,6 +1061,9 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not st:
         await q.answer("انتهت الجلسة، ابدأ الاختبار من جديد.", show_alert=True)
         return
+    if st.get("submitted"):
+        await q.answer("صُحّحت هذه المحاولة بالفعل — اضغط «إعادة المحاولة».", show_alert=True)
+        return
 
     st.setdefault("revealed", [])
     qids = st.get("qids") or []
@@ -1132,6 +1142,7 @@ async def quiz_finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ],
         ]
     )
+    st["submitted"] = True
     st["i"] = 0
     await _edit_or_send(update.effective_message, "\n".join(lines), kb)
 
