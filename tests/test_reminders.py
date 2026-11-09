@@ -10,7 +10,7 @@ from sqlalchemy import select
 from core.db import SessionLocal, engine, init_db
 from core.learning import STATUS_IN_PROGRESS, STATUS_PASSED
 from core.models import Base, Course, Lesson, Progress, Stage, User
-from core.reminders import mark_reminded, pending_reminders
+from core.reminders import current_lesson, mark_reminded, pending_reminders
 
 NOW = dt.datetime(2026, 5, 1, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -149,5 +149,48 @@ def test_completed_course_has_no_reminder() -> None:
 
         asyncio.run(_finish())
         assert _pending(uid) == []
+    finally:
+        _reset_db()
+
+
+def test_current_lesson_skips_completed_newer_course() -> None:
+    """لو أنهى كورسا حديثا، نذكّره بالمسار الأقدم غير المكتمل."""
+    _reset_db()
+    try:
+        uid, first_lesson, _first_next = _seed()
+
+        async def _go() -> int | None:
+            async with SessionLocal() as s:
+                done_course = Course(
+                    slug="done-c", title="مكتمل", order_index=2, is_published=True
+                )
+                s.add(done_course)
+                await s.flush()
+                done_stage = Stage(
+                    course_id=done_course.id, slug="done-s", title="م",
+                    order_index=1, is_published=True,
+                )
+                s.add(done_stage)
+                await s.flush()
+                done_lesson = Lesson(
+                    stage_id=done_stage.id, slug="done-l", title="منتهي",
+                    summary="م", objectives=["أ"], content_md="ن" * 260,
+                    order_index=1, status="published",
+                )
+                s.add(done_lesson)
+                await s.flush()
+                s.add(
+                    Progress(
+                        user_id=uid,
+                        lesson_id=done_lesson.id,
+                        status=STATUS_PASSED,
+                        updated_at=NOW - dt.timedelta(hours=1),
+                    )
+                )
+                await s.commit()
+                lesson, _course = await current_lesson(s, uid)
+                return lesson.id if lesson else None
+
+        assert asyncio.run(_go()) == first_lesson
     finally:
         _reset_db()

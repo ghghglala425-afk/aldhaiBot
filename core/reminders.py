@@ -40,21 +40,30 @@ async def latest_progress(session: AsyncSession, user_id: int) -> Progress | Non
 async def current_lesson(
     session: AsyncSession, user_id: int
 ) -> tuple[Lesson | None, int | None]:
-    """الدرس الذي يجب أن يكمله المستخدم الآن، ومعرّف كورسه."""
-    prog = await latest_progress(session, user_id)
-    if not prog:
-        return None, None
-    lesson = await session.get(Lesson, prog.lesson_id)
-    if not lesson:
-        return None, None
-    stage = await session.get(Stage, lesson.stage_id)
-    if not stage:
-        return None, None
-    for lsn in await ordered_lessons(session, stage.course_id):
-        p = await get_progress(session, user_id, lsn.id)
-        if not p or p.status != STATUS_PASSED:
-            return lsn, stage.course_id
-    return None, stage.course_id
+    """الدرس الذي يجب أن يكمله المستخدم الآن، ومعرّف كورسه.
+
+    نمرّ على المسارات من الأحدث نشاطا إلى الأقدم، ونتجاهل المسار المكتمل
+    تماما — كي يجد المستخدم دائما درسا متبقيا حتى لو أنهى كورسا سابقا.
+    """
+    res = await session.execute(
+        select(Progress)
+        .where(Progress.user_id == user_id)
+        .order_by(Progress.updated_at.desc(), Progress.id.desc())
+    )
+    seen_courses: set[int] = set()
+    for prog in res.scalars().all():
+        lesson = await session.get(Lesson, prog.lesson_id)
+        if not lesson:
+            continue
+        stage = await session.get(Stage, lesson.stage_id)
+        if not stage or stage.course_id in seen_courses:
+            continue
+        seen_courses.add(stage.course_id)
+        for lsn in await ordered_lessons(session, stage.course_id):
+            p = await get_progress(session, user_id, lsn.id)
+            if not p or p.status != STATUS_PASSED:
+                return lsn, stage.course_id
+    return None, None
 
 
 async def pending_reminders(
