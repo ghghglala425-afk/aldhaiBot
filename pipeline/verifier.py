@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from core.config import settings
 from core.logging import get_logger
+from pipeline.code_repair import repair_code
 from pipeline.sandbox_runner import run_code
 from pipeline.schema import GeneratedCode, GeneratedLesson
 
@@ -21,6 +22,9 @@ class VerifyReport:
     exec_failed: int = 0
     exec_skipped: int = 0
     notes: list[str] = field(default_factory=list)
+    # أرقام الأكواد (1-based) التي فشل تنفيذها، ومشاكل التنفيذ وحدها.
+    failed_code_indices: list[int] = field(default_factory=list)
+    exec_issues: list[str] = field(default_factory=list)
 
     def summary(self) -> str:
         return (
@@ -111,14 +115,25 @@ async def verify_lesson(
 async def _verify_exec(codes: list[GeneratedCode], report: VerifyReport) -> None:
     sem = asyncio.Semaphore(max(1, settings.VERIFY_CODE_CONCURRENCY))
 
-    async def one(idx: int, c: GeneratedCode) -> tuple[int, str, str, str | None]:
+    async def one(
+        idx: int, c: GeneratedCode
+    ) -> tuple[int, str, str, str | None, str | None]:
         async with sem:
             res = await run_code(c.language, c.code)
+        repaired: str | None = None
+        # إصلاح تلقائي محافظ (ترويسات ناقصة/اسم كلاس) قبل الحكم بالفشل.
+        if res.status == "error":
+            fixed = repair_code(c.language, c.code)
+            if fixed and fixed != c.code:
+                async with sem:
+                    retry = await run_code(c.language, fixed)
+                if retry.status in {"ok", "skipped"}:
+                    repaired, res = fixed, retry
         note: str | None = None
         if res.status == "ok" and c.expected_output.strip() and res.stdout.strip():
             if c.expected_output.strip()[:40] not in res.stdout:
                 note = f"كود{idx}: الخرج الفعلي لا يطابق المذكور تماما (تنبيه لا فشل)"
-        return idx, res.status, (res.detail or res.stderr[:120]), note
+        return idx, res.status, (res.detail or res.stderr[:120]), note, repaired
 
     results = await asyncio.gather(
         *(one(i, c) for i, c in enumerate(codes, start=1)), return_exceptions=True
@@ -128,13 +143,48 @@ async def _verify_exec(codes: list[GeneratedCode], report: VerifyReport) -> None
             report.exec_failed += 1
             report.issues.append(f"فشل غير متوقع أثناء التنفيذ: {r}")
             continue
-        idx, status, detail, note = r
+        idx, status, detail, note, repaired = r
         if status == "ok":
             report.exec_ok += 1
+            if repaired:
+                codes[idx - 1].code = repaired
+                report.notes.append(f"كود{idx}: أُصلح تلقائياً ليُترجم بنجاح")
             if note:
                 report.notes.append(note)
         elif status == "skipped":
             report.exec_skipped += 1
         else:
             report.exec_failed += 1
-            report.issues.append(f"كود{idx} فشل التنفيذ: {detail}")
+            report.failed_code_indices.append(idx)
+            issue = f"كود{idx} فشل التنفيذ: {detail}"
+            report.issues.append(issue)
+            report.exec_issues.append(issue)
+
+
+def only_exec_failures(report: VerifyReport) -> bool:
+    """هل كل مشاكل الدرس محصورة في فشل تنفيذ الأكواد؟"""
+    if not report.exec_issues:
+        return False
+    return set(report.issues) == set(report.exec_issues)
+
+
+def drop_failed_codes(
+    lesson: GeneratedLesson, report: VerifyReport, *, keep_min: int = 1
+) -> bool:
+    """يحذف الأكواد التي فشل تنفيذها، إن بقي الحد الأدنى من الأكواد الناجحة.
+
+    الحذف أفضل من إفشال الدرس كله: يبقى الدرس مفيدا بأكواده العاملة،
+    وتُسجَّل الأكواد المحذوفة في `report.notes` للتشخيص. يعيد True إن حُذف شيء.
+    """
+    failed = set(report.failed_code_indices)
+    if not failed:
+        return False
+    kept = [c for i, c in enumerate(lesson.code_samples, start=1) if i not in failed]
+    if len(kept) == len(lesson.code_samples) or len(kept) < max(1, keep_min):
+        return False
+    dropped = sorted(failed)
+    lesson.code_samples = kept
+    report.notes.append(
+        f"حُذف {len(dropped)} كود فاشل التنفيذ (أرقام: {', '.join(map(str, dropped))})"
+    )
+    return True

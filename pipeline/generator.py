@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 
+from pydantic import ValidationError
+
 from core.config import settings
 from core.logging import get_logger
 from pipeline.ai import chat_json
 from pipeline.atlas import enrich_codes
+from pipeline.quality import balance_quiz
 from pipeline.schema import GeneratedLesson
-from pipeline.verifier import VerifyReport, verify_lesson
+from pipeline.verifier import (
+    VerifyReport,
+    drop_failed_codes,
+    only_exec_failures,
+    verify_lesson,
+)
 
 log = get_logger("pipeline.generator")
 
@@ -84,6 +92,16 @@ def _build_user(
     )
 
 
+def _brief_validation_error(exc: ValidationError) -> str:
+    """ملخّص قصير لأخطاء المخطط يُرسل للنموذج في محاولة الإصلاح."""
+    parts: list[str] = []
+    for err in exc.errors()[:5]:
+        loc = ".".join(str(p) for p in err.get("loc", ()))
+        msg = str(err.get("msg") or "")
+        parts.append(f"{loc}: {msg}" if loc else msg)
+    return " | ".join(parts) or str(exc)[:300]
+
+
 async def generate_lesson(
     topic: str,
     language: str,
@@ -104,20 +122,33 @@ async def generate_lesson(
     model = settings.outline_model if fast else None
     report = VerifyReport(passed=False)
     lesson: GeneratedLesson | None = None
+    raw: object | None = None
 
     for attempt in range(1, repairs + 2):
         if attempt == 1:
             user = _build_user(
                 topic, language, difficulty, context, min_codes=min_codes, min_chars=min_chars
             )
-        else:
-            assert lesson is not None
+        elif lesson is not None:
             user = (
                 "الدرس السابق فشل في التحقق. أصلح المشاكل التالية وأعد إرجاع JSON كامل صحيح:\n- "
                 + "\n- ".join(report.issues[:15])
                 + "\n\nالدرس السابق:\n"
                 + json.dumps(lesson.model_dump(), ensure_ascii=False)[:6000]
             )
+        else:
+            user = (
+                "المخرجات السابقة لم تُطابق بنية JSON المطلوبة. أعد إرجاع كائن JSON واحدا "
+                "كاملا صحيحا بالبنية المحددة حرفيا بلا أي نص حوله.\nالأخطاء:\n- "
+                + "\n- ".join(report.issues[:10])
+            )
+            try:
+                user += (
+                    "\n\nالمخرجات السابقة (مقتطف):\n"
+                    + json.dumps(raw, ensure_ascii=False)[:4000]
+                )
+            except (TypeError, ValueError):
+                pass
 
         raw = await chat_json(
             system,
@@ -126,7 +157,19 @@ async def generate_lesson(
             max_retries=1 if fast else None,
             timeout=150.0 if fast else None,
         )
-        lesson = GeneratedLesson.model_validate(raw)
+        try:
+            lesson = GeneratedLesson.model_validate(raw)
+        except ValidationError as exc:
+            lesson = None
+            report = VerifyReport(passed=False)
+            report.issues.append("JSON غير مطابق للمخطط: " + _brief_validation_error(exc))
+            log.warning("محاولة %s: مخطط غير صالح: %s", attempt, report.issues[0])
+            continue
+
+        fixed = balance_quiz(lesson)
+        if fixed:
+            log.info("محاولة %s: عُدّلت %s إجابة لتوزيع الخيارات الصحيحة", attempt, fixed)
+
         report = await verify_lesson(
             lesson, expect_language=language, check_atlas=False, min_codes=min_codes
         )
@@ -134,7 +177,28 @@ async def generate_lesson(
         if report.passed:
             break
 
-    assert lesson is not None
+        # إنقاذ بلا استدعاء AI جديد: فشل التنفيذ وحده ⇒ نحذف الأكواد الفاشلة.
+        if only_exec_failures(report) and drop_failed_codes(lesson, report):
+            rescue = await verify_lesson(
+                lesson,
+                expect_language=language,
+                check_atlas=False,
+                check_exec=False,
+                min_codes=len(lesson.code_samples),
+            )
+            rescue.exec_ok = report.exec_ok
+            rescue.exec_skipped = report.exec_skipped
+            rescue.notes = report.notes + rescue.notes
+            log.info("محاولة %s: إنقاذ بعد حذف الأكواد الفاشلة: %s", attempt, rescue.summary())
+            report = rescue
+            if report.passed:
+                break
+
+    if lesson is None:
+        raise RuntimeError(
+            "تعذّر توليد درس صالح: "
+            + ("; ".join(report.issues[:3]) or "مخرجات النموذج غير صالحة")
+        )
     if not report.passed:
         return lesson, report
 
