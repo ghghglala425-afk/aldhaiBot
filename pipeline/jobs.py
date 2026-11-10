@@ -28,7 +28,12 @@ from core.models import (
 from pipeline.generator import generate_lesson
 from pipeline.outline import build_language_outline
 from pipeline.store_content import save_lesson
-from pipeline.taxonomy import LessonPlan, language_icon, language_course_title
+from pipeline.taxonomy import (
+    LessonPlan,
+    language_course_slug,
+    language_icon,
+    language_course_title,
+)
 
 log = get_logger("pipeline.jobs")
 
@@ -220,6 +225,83 @@ async def enqueue_prebuild(
         if await enqueue_lesson(session, lid, priority=prio):
             added += 1
     return added
+
+
+# ---------------------------------------------------------------------
+#  التسخين المسبق (أشهر اللغات)
+# ---------------------------------------------------------------------
+async def enqueue_warm_front(session, language: str, n: int | None = None) -> int:
+    """يُدرج توليد أول N درس من بداية المسار فقط (تسخين محدود).
+
+    بخلاف `enqueue_warm` الذي يتقدّم للأمام كلما اكتملت الدروس، هذه الدالة
+    تبقى على أول N درس ولا تستهلك الحصة في بناء المسار كله. المهام النشطة
+    تُستبعد تلقائيا عبر `dedup_key`، لذا الاستدعاء الدوري آمن (idempotent).
+    """
+    n = settings.PREBUILD_WARM_LESSONS if n is None else n
+    if not n or n <= 0:
+        return 0
+    rows = (
+        await session.execute(
+            select(Lesson.id, Lesson.status)
+            .join(Stage, Lesson.stage_id == Stage.id)
+            .join(Course, Stage.course_id == Course.id)
+            .where(Course.slug == language_course_slug(language))
+            .order_by(Stage.order_index, Lesson.order_index)
+            .limit(n)
+        )
+    ).all()
+    added = 0
+    for lesson_id, status in rows:
+        if status != "outline":
+            continue
+        if await enqueue_lesson(
+            session, lesson_id, priority=settings.GEN_PREBUILD_PRIORITY
+        ):
+            added += 1
+    return added
+
+
+async def warm_popular(
+    *,
+    languages: list[str] | None = None,
+    lessons: int | None = None,
+) -> dict[str, int]:
+    """يضمن مخطط كل لغة شائعة ثم يُدرج أول دروسها في الطابور.
+
+    يُستدعى عند الإقلاع وبشكل دوري. لا يكرّر مهمة نشطة، ولا يعيد بناء
+    مخطط موجود. يعيد {اللغة: عدد الدروس المضافة للطابور}.
+    """
+    langs = languages if languages is not None else settings.prebuild_langs
+    out: dict[str, int] = {}
+    async with SessionLocal() as session:
+        for slug in langs:
+            if await outline_exists(session, slug):
+                out[slug] = await enqueue_warm_front(session, slug, lessons)
+                continue
+            # المخطط غير موجود بعد: أدرجه فقط، والدروس تُسخَّن عند اكتماله.
+            await enqueue_outline(session, slug, priority=1)
+            out[slug] = 0
+    if any(v > 0 for v in out.values()):
+        log.info("تسخين اللغات الشائعة: %s", out)
+    return out
+
+
+def start_initial_warm() -> asyncio.Task | None:
+    """يُطلق التسخين الأولي بعد إقلاع العامل (لا يحجب بدء البوت)."""
+    if not settings.PREBUILD_ENABLED or not settings.ai_configured:
+        return None
+
+    async def _run() -> None:
+        try:
+            await asyncio.sleep(10)  # اترك العامل يبدأ ويلتقط مهامه
+            await warm_popular()
+        except Exception as e:  # noqa: BLE001
+            log.warning("تعذّر التسخين الأولي للغات الشائعة: %s", e)
+
+    task = asyncio.create_task(_run())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 # ---------------------------------------------------------------------
@@ -523,6 +605,9 @@ async def _outline_job(session, job: GenerationJob) -> dict:
     )
     if res.get("ok"):
         await enqueue_warm(session, lang.slug)
+        # أشهر اللغات: ابدأ فورا بتسخين أول دروسها بدل انتظار الدورة القادمة.
+        if settings.PREBUILD_ENABLED and lang.slug in settings.prebuild_langs:
+            await enqueue_warm_front(session, lang.slug, settings.PREBUILD_WARM_LESSONS)
     return res
 
 

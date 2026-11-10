@@ -201,6 +201,47 @@ async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await tg.send_text(update.effective_message, text[:4000], parse_mode=ParseMode.HTML)
 
 
+async def report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يرسل التقرير الأسبوعي فورا (نفس تقرير المهمة المجدولة)."""
+    if not is_admin(update.effective_user.id):
+        return
+    from pipeline.report import build_weekly_report, render_report
+
+    try:
+        text = render_report(await build_weekly_report())
+    except Exception as e:  # noqa: BLE001
+        log.exception("تعذّر إنشاء التقرير")
+        await tg.send_text(update.effective_message, f"❌ فشل التقرير: {str(e)[:200]}")
+        return
+    await tg.send_text(update.effective_message, text, parse_mode=ParseMode.HTML)
+
+
+async def warm_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يسخّن أول دروس اللغات الشائعة (أو لغات محددة: /warm java,go)."""
+    if not is_admin(update.effective_user.id):
+        return
+    from pipeline import jobs
+
+    args = context.args or []
+    langs = [x.strip() for x in args[0].split(",") if x.strip()] if args else None
+    await tg.send_text(update.effective_message, "⏳ أُدرج مهام التسخين…")
+    try:
+        stats = await jobs.warm_popular(languages=langs)
+    except Exception as e:  # noqa: BLE001
+        log.exception("تعذّر التسخين")
+        await tg.send_text(update.effective_message, f"❌ فشل التسخين: {str(e)[:200]}")
+        return
+    rows = "\n".join(
+        f"• <code>{slug}</code>: {n} درسا" for slug, n in stats.items()
+    ) or "لا لغات مضبوطة."
+    await tg.send_text(
+        update.effective_message,
+        f"🔥 <b>تسخين مسبق</b>\n{rows}\n\n"
+        "<i>الدروس المضافة تعمل في الخلفية بلا انتظار المستخدم.</i>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 def register_handlers(app) -> None:
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
@@ -208,3 +249,5 @@ def register_handlers(app) -> None:
     app.add_handler(CommandHandler("jobs", build_cmd))
     app.add_handler(CommandHandler("backup", backup_cmd))
     app.add_handler(CommandHandler("ai", ai_cmd))
+    app.add_handler(CommandHandler("report", report_cmd))
+    app.add_handler(CommandHandler("warm", warm_cmd))

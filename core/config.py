@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     BACKUP_HOUR: int = 3
     BACKUP_MINUTE: int = 10
 
+    # تقرير أسبوعي للمشرف: التشغيل + استهلاك الذكاء الاصطناعي (UTC)
+    REPORT_ENABLED: bool = True
+    REPORT_WEEKDAY: int = 0  # 0 = الاثنين
+    REPORT_HOUR: int = 6
+    REPORT_MINUTE: int = 0
+
     # AI (متوافق مع OpenAI؛ يعمل مع LM Studio/Ollama محليا)
     AI_BASE_URL: str = "https://api.openai.com/v1"
     AI_API_KEY: str = ""
@@ -216,6 +222,12 @@ class Settings(BaseSettings):
     # 0 = كل دروس اللغة بلا سقف (قد يستهلك حصة كبيرة).
     GEN_PREBUILD_MAX: int = 0
     GEN_PREBUILD_PRIORITY: int = 2
+    # تسخين مسبق لأشهر اللغات: تُبنى أول دروس كل لغة قبل أن يطلبها مستخدم،
+    # ثم يُعاد فحصها دوريا (Top-up) بلا تكرار للمهام النشطة.
+    PREBUILD_ENABLED: bool = True
+    PREBUILD_LANGS: str = "java,cpp,typescript,csharp,rust,go"
+    PREBUILD_WARM_LESSONS: int = 6
+    PREBUILD_REFRESH_MINUTES: int = 60
     # نسبة الميزانية اليومية المحجوزة للتفاعل الفوري (لا تلمسها مهام الخلفية).
     AI_RESERVE_PCT: int = 25
     # أقل عدد طلبات يُترك للتفاعل الفوري قبل أن توقف مهام الخلفية نفسها.
@@ -251,6 +263,11 @@ class Settings(BaseSettings):
         if v not in {"auto", "json_object", "json_schema", "none"}:
             raise ValueError("AI_JSON_MODE يجب أن يكون auto|json_object|json_schema|none")
         return v
+
+    @property
+    def prebuild_langs(self) -> List[str]:
+        """قائمة اللغات التي تُسخَّن مسبقا (من PREBUILD_LANGS)."""
+        return [x.strip() for x in (self.PREBUILD_LANGS or "").split(",") if x.strip()]
 
     @property
     def ai_json_modes(self) -> List[str]:

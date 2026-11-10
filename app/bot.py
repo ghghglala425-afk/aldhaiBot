@@ -238,6 +238,7 @@ async def post_init(app: Application) -> None:
         log.warning("تعذّر استرجاع المهام المعلّقة: %s", e)
 
     jobs.start_worker()
+    jobs.start_initial_warm()
 
 
 async def _count_update(update: object, context) -> None:

@@ -167,6 +167,43 @@ async def _send_backup(context: ContextTypes.DEFAULT_TYPE) -> None:
     log.info("أُرسلت النسخة الاحتياطية إلى %s مشرف.", sent)
 
 
+async def _refresh_prebuild(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يعيد ملء دروس اللغات الشائعة بلا تكرار (Top-up دوري)."""
+    if not settings.ai_configured:
+        return
+    from pipeline import jobs
+
+    try:
+        stats = await jobs.warm_popular()
+    except Exception as e:  # noqa: BLE001
+        log.warning("تعذّر تسخين اللغات الشائعة: %s", e)
+        return
+    queued = sum(v for v in stats.values() if v > 0)
+    if queued:
+        log.info("تسخين دوري: %s درسا جديدا (%s).", queued, stats)
+
+
+async def _send_weekly_report(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يُرسل تقرير التشغيل واستهلاك الذكاء الاصطناعي إلى المشرفين أسبوعيا."""
+    if not settings.admin_ids:
+        return
+    from pipeline.report import build_weekly_report, render_report
+
+    try:
+        data = await build_weekly_report()
+        text = render_report(data)
+    except Exception as e:  # noqa: BLE001
+        log.exception("تعذّر إنشاء التقرير الأسبوعي: %s", e)
+        return
+    for admin_id in settings.admin_ids:
+        try:
+            await context.bot.send_message(
+                admin_id, text, parse_mode=ParseMode.HTML
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("تعذّر إرسال التقرير إلى %s: %s", admin_id, e)
+
+
 async def remind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """يعرض الدرس الحالي في المسار ويتيح استئنافه فورا."""
     tg_id = update.effective_user.id if update.effective_user else None
@@ -242,3 +279,29 @@ def setup_jobs(app: Application) -> None:
         minutes,
         settings.REMINDER_IDLE_HOURS,
     )
+
+    if settings.PREBUILD_ENABLED and settings.ai_configured:
+        refresh = max(15, int(settings.PREBUILD_REFRESH_MINUTES))
+        jq.run_repeating(
+            _refresh_prebuild,
+            interval=dt.timedelta(minutes=refresh),
+            first=dt.timedelta(minutes=5),
+        )
+        log.info(
+            "جدولة تسخين اللغات الشائعة كل %s دقيقة: %s",
+            refresh,
+            ", ".join(settings.prebuild_langs),
+        )
+
+    if settings.REPORT_ENABLED and settings.admin_ids:
+        jq.run_daily(
+            _send_weekly_report,
+            time=dt.time(hour=settings.REPORT_HOUR, minute=settings.REPORT_MINUTE),
+            days=(settings.REPORT_WEEKDAY % 7,),
+        )
+        log.info(
+            "جدولة التقرير الأسبوعي يوم %s في %02d:%02d UTC",
+            settings.REPORT_WEEKDAY,
+            settings.REPORT_HOUR,
+            settings.REPORT_MINUTE,
+        )
