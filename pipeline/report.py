@@ -21,8 +21,12 @@ _PROVIDER_LABELS = {
 }
 
 
-def _label(usage_id: str) -> str:
+def _label(usage_id: str, specs: dict | None = None) -> str:
     """يحوّل معرّف المسار (provider:key~model) إلى اسم مقروء."""
+    spec = (specs or {}).get(usage_id)
+    if spec is not None:
+        name = _PROVIDER_LABELS.get(spec.name, spec.name)
+        return f"{name} · {spec.model}"
     provider, _, rest = (usage_id or "").partition(":")
     model = rest.partition("~")[2] if "~" in rest else rest
     model = model or provider
@@ -141,6 +145,13 @@ async def build_weekly_report(days: int = 7) -> dict:
             ).all()
         ]
 
+        try:
+            from pipeline.providers import build_providers
+
+            specs = {p.usage_id: p for p in build_providers()}
+        except Exception:  # noqa: BLE001
+            specs = {}
+
         ai_rows = (
             await s.execute(
                 select(
@@ -157,6 +168,7 @@ async def build_weekly_report(days: int = 7) -> dict:
         ai_paths = [
             {
                 "id": str(provider),
+                "label": _label(str(provider), specs),
                 "requests": int(requests or 0),
                 "tokens": int(tokens or 0),
                 "errors": int(errors or 0),
@@ -236,7 +248,9 @@ def render_report(data: dict) -> str:
             detail = f"{_fmt(path['requests'])} طلب · {_fmt(path['tokens'])} توكن"
             if path["errors"]:
                 detail += f" · أخطاء {path['errors']}"
-            lines.append(f"  – <code>{_label(path['id'])}</code>: {detail}")
+            lines.append(
+                f"  – <code>{path.get('label') or _label(path['id'])}</code>: {detail}"
+            )
     else:
         lines.append("  – لا استهلاك مسجّل في هذه الفترة.")
 
