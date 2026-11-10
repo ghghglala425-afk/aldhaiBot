@@ -129,6 +129,44 @@ async def _send_progress_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
         log.info("أُرسلت %s تذكيرات دراسية.", sent)
 
 
+async def _send_backup(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نسخة احتياطية يومية تُرسل إلى المشرفين كملف (حفظ خارج الخادم)."""
+    if not settings.admin_ids:
+        return
+    import io
+
+    from pipeline.backup import backup_filename, dump_user_data
+
+    try:
+        blob, counts = await dump_user_data()
+    except Exception as e:  # noqa: BLE001
+        log.exception("تعذّر إنشاء النسخة الاحتياطية اليومية: %s", e)
+        return
+
+    total = sum(counts.values())
+    caption = (
+        "💾 <b>نسخة احتياطية يومية</b>\n"
+        f"الصفوف: {total} · الحجم: {len(blob) / 1024:.1f} KB\n"
+        f"مستخدمون {counts.get('users', 0)} · تقدّم {counts.get('progress', 0)}"
+    )
+    sent = 0
+    for admin_id in settings.admin_ids:
+        buf = io.BytesIO(blob)
+        buf.name = backup_filename()
+        try:
+            await context.bot.send_document(
+                chat_id=admin_id,
+                document=buf,
+                filename=buf.name,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+            )
+            sent += 1
+        except Exception as e:  # noqa: BLE001
+            log.warning("تعذّر إرسال النسخة الاحتياطية إلى %s: %s", admin_id, e)
+    log.info("أُرسلت النسخة الاحتياطية إلى %s مشرف.", sent)
+
+
 async def remind_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """يعرض الدرس الحالي في المسار ويتيح استئنافه فورا."""
     tg_id = update.effective_user.id if update.effective_user else None
@@ -180,6 +218,17 @@ def setup_jobs(app: Application) -> None:
         return
     jq.run_daily(_send_daily, time=dt.time(hour=DAILY_HOUR, minute=DAILY_MINUTE))
     log.info("جدولة الدرس اليومي في %02d:%02d", DAILY_HOUR, DAILY_MINUTE)
+
+    if settings.BACKUP_ENABLED and settings.admin_ids:
+        jq.run_daily(
+            _send_backup,
+            time=dt.time(hour=settings.BACKUP_HOUR, minute=settings.BACKUP_MINUTE),
+        )
+        log.info(
+            "جدولة النسخ الاحتياطي اليومي في %02d:%02d UTC",
+            settings.BACKUP_HOUR,
+            settings.BACKUP_MINUTE,
+        )
 
     # تذكير من توقف عن مساره: فحص دوري، والإرسال الفعلي كل 23 ساعة خمول.
     minutes = max(10, int(settings.REMINDER_CHECK_MINUTES))

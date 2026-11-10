@@ -113,8 +113,98 @@ async def build_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
 
 
+async def backup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يرسل نسخة احتياطية من بيانات المستخدمين إلى المشرف كملف."""
+    if not is_admin(update.effective_user.id):
+        return
+    import io
+
+    from pipeline.backup import backup_filename, dump_user_data
+
+    await tg.send_text(update.effective_message, "⏳ أجهّز النسخة الاحتياطية…")
+    try:
+        blob, counts = await dump_user_data()
+    except Exception as e:  # noqa: BLE001
+        log.exception("تعذّر إنشاء النسخة الاحتياطية")
+        await tg.send_text(update.effective_message, f"❌ فشل النسخ: {str(e)[:200]}")
+        return
+    total = sum(counts.values())
+    caption = (
+        "💾 <b>نسخة احتياطية</b>\n"
+        f"الصفوف: {total}\n"
+        f"المستخدمون: {counts.get('users', 0)} · التقدّم: {counts.get('progress', 0)}\n"
+        f"الملاحظات: {counts.get('notes', 0)} · الشهادات: {counts.get('certificates', 0)}\n"
+        f"الحجم: {len(blob) / 1024:.1f} KB"
+    )
+    buf = io.BytesIO(blob)
+    buf.name = backup_filename()
+    try:
+        await context.bot.send_document(
+            chat_id=update.effective_user.id,
+            document=buf,
+            filename=buf.name,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.exception("تعذّر إرسال النسخة الاحتياطية")
+        await tg.send_text(update.effective_message, f"❌ تعذّر الإرسال: {str(e)[:200]}")
+
+
+async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """يعرض استهلاك الذكاء الاصطناعي اليوم والرصيد المتبقي لكل نموذج."""
+    if not is_admin(update.effective_user.id):
+        return
+    import datetime as dt
+
+    from core.models import AIUsage
+    from pipeline.providers import build_providers, interactive_headroom
+
+    today = dt.date.today()
+    async with SessionLocal() as s:
+        rows = list(
+            (
+                await s.execute(
+                    select(AIUsage)
+                    .where(AIUsage.day == today)
+                    .order_by(AIUsage.tokens.desc())
+                )
+            ).scalars()
+        )
+    specs = {p.usage_id: p for p in build_providers()}
+    lines = [f"🤖 <b>حصص الذكاء الاصطناعي — {today}</b>", ""]
+    if not rows:
+        lines.append("لا استهلاك اليوم بعد ✅")
+    for r in rows:
+        spec = specs.get(r.provider)
+        detail = f"{r.requests} طلب"
+        if spec and spec.rpd:
+            detail += f"/{spec.rpd}"
+        if spec and spec.tpd:
+            detail += f" · {r.tokens}/{spec.tpd} توكن"
+        else:
+            detail += f" · {r.tokens} توكن"
+        if r.errors:
+            detail += f" · أخطاء {r.errors}"
+        lines.append(f"• <code>{r.provider}</code>: {detail}")
+
+    tokens_left, reqs_left = await interactive_headroom()
+    lines += [
+        "",
+        f"المسارات المضبوطة: <b>{len(specs)}</b>",
+        f"أفضل رصيد متبقٍ للتفاعل: <b>{reqs_left}</b> طلب · "
+        f"<b>{tokens_left:,}</b> توكن",
+        "",
+        "<i>الحصص المجانية تُحسب لكل نموذج على حدة وتتجدّد منتصف ليل UTC.</i>",
+    ]
+    text = "\n".join(lines)
+    await tg.send_text(update.effective_message, text[:4000], parse_mode=ParseMode.HTML)
+
+
 def register_handlers(app) -> None:
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CommandHandler("build", build_cmd))
     app.add_handler(CommandHandler("jobs", build_cmd))
+    app.add_handler(CommandHandler("backup", backup_cmd))
+    app.add_handler(CommandHandler("ai", ai_cmd))

@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # دورية فحص المستخدمين الخاملين (بالدقائق)
     REMINDER_CHECK_MINUTES: int = 60
 
+    # نسخة احتياطية يومية من بيانات المستخدمين تُرسل للمشرفين عبر تلجرام
+    BACKUP_ENABLED: bool = True
+    BACKUP_HOUR: int = 3
+    BACKUP_MINUTE: int = 10
+
     # AI (متوافق مع OpenAI؛ يعمل مع LM Studio/Ollama محليا)
     AI_BASE_URL: str = "https://api.openai.com/v1"
     AI_API_KEY: str = ""
