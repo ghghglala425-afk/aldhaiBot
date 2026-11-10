@@ -90,10 +90,10 @@ class Settings(BaseSettings):
     GEMINI_API_KEY_2: str = ""
     GEMINI_MODEL: str = "gemini-3.5-flash-lite"
     # موديل بديل يُجرَّب تلقائيا إذا رفض Gemini اسم الموديل (404)
-    GEMINI_FALLBACK_MODEL: str = "gemini-3.8-flash"
+    GEMINI_FALLBACK_MODEL: str = "gemini-flash-lite-latest"
     # سلسلة موديلات مرتّبة (فاصلة) تُجرَّب بالترتيب عند فشل الموديل الأساسي
     GEMINI_MODEL_CHAIN: str = (
-        "gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash,gemini-3.1-flash-lite"
+        "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-lite-latest"
     )
     # اكتشاف الموديلات المتاحة من /models عند فشل الاسم (يُخزَّن مؤقتا)
     GEMINI_AUTODETECT: bool = True

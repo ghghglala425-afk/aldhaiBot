@@ -189,11 +189,11 @@ async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines.append(f"• <code>{r.provider}</code>: {detail}")
 
     tokens_left, reqs_left = await interactive_headroom()
+    token_txt = "بلا سقف" if tokens_left >= 10**9 else f"{tokens_left:,} توكن"
     lines += [
         "",
         f"المسارات المضبوطة: <b>{len(specs)}</b>",
-        f"أفضل رصيد متبقٍ للتفاعل: <b>{reqs_left}</b> طلب · "
-        f"<b>{tokens_left:,}</b> توكن",
+        f"أفضل رصيد متبقٍ للتفاعل: <b>{reqs_left}</b> طلب · <b>{token_txt}</b>",
         "",
         "<i>الحصص المجانية تُحسب لكل نموذج على حدة وتتجدّد منتصف ليل UTC.</i>",
     ]
