@@ -162,7 +162,6 @@ def targets_conversation() -> ConversationHandler:
         states={AWAIT_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_submit)]},
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
-        per_message=True,
     )
 
 

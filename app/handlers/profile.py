@@ -478,7 +478,6 @@ def notes_conversation() -> ConversationHandler:
         states={ASK_NOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, note_save)]},
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
-        per_message=True,
     )
 
 

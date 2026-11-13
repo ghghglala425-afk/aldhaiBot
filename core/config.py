@@ -249,6 +249,14 @@ class Settings(BaseSettings):
     GEN_NOW_CONCURRENCY: int = 2
     GEN_NOW_MAX_WAITING: int = 8
 
+    # ---- حماية الـPolling من التعارض (نسختان بنفس التوكن) ----
+    # مهلة قبل أول getUpdates تسمح للنسخة السابقة بإغلاق اتصالها عند النشر.
+    POLL_START_DELAY_SECONDS: int = 12
+    # قفل Postgres يضمن ألا تعمل نسختان في وضع Polling في الوقت نفسه.
+    POLLING_LOCK_ENABLED: bool = True
+    # -1 = انتظار بلا حد حتى تُغلق النسخة الأخرى (الأكثر أمانا).
+    POLLING_LOCK_WAIT_SECONDS: int = -1
+
     # بيئات الهدف: روابط خارجية بديلة عن الحاويات المحلية. صيغة: slug=url,slug=url
     TARGET_EXTERNAL_URLS: str = ""
 

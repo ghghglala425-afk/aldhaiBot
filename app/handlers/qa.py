@@ -129,7 +129,6 @@ def qa_conversation() -> ConversationHandler:
         states={AWAIT_BODY: [MessageHandler(filters.TEXT & ~filters.COMMAND, qa_save)]},
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
-        per_message=True,
     )
 
 

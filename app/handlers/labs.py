@@ -128,7 +128,6 @@ def labs_conversation() -> ConversationHandler:
         states={AWAIT_FLAG: [MessageHandler(filters.TEXT & ~filters.COMMAND, flag_submit)]},
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
-        per_message=True,
     )
 
 

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
+import warnings
 
 from telegram import BotCommand, Update
 from telegram.error import Conflict, NetworkError, TelegramError
@@ -52,28 +54,54 @@ log = get_logger("bot")
 # =============================================================================
 #  كاشف التعارض (نسخة ثانية تعمل بنفس التوكن)
 # =============================================================================
-_conflict_state = {"count": 0, "notified": False}
+_conflict_state = {"count": 0, "notified": False, "first_at": 0.0}
+# لا نُقلق المشرف إلا إذا استمر التعارض: تعارض الثواني الأولى طبيعي عند
+# إعادة النشر (النسخة القديمة تُغلق) ويُحلّ تلقائيا.
+_CONFLICT_ALERT_AFTER = 180.0
 
 
 def _updater_error(error: Exception) -> None:
     """يُستدعى عند خطأ في جلب التحديثات.
 
-    `Conflict` يعني أن هناك نسخة أخرى تعمل بنفس التوكن — في هذه الحالة
-    لا تصل أي رسالة والبوت يبدو "ميتا" بلا سبب واضح. نُبلغ المشرف.
+    `Conflict` يعني أن نسخة أخرى ما زالت تستخدم التوكن نفسه (غالبا أثناء
+    إغلاق النشر السابق). ننتظر ونعيد المحاولة تلقائيا، ولا نعتبره خطأ إلا
+    إذا استمر دقائق — حينها نُبلغ المشرف.
     """
     if isinstance(error, Conflict):
-        _conflict_state["count"] += 1
-        n = _conflict_state["count"]
-        if n == 1:
-            log.error(
-                "⛔ تعارض: هناك نسخة أخرى من البوت تعمل بنفس التوكن. "
-                "أوقفها (أو احذف الخدمة القديمة في Railway)."
+        now = time.monotonic()
+        if not _conflict_state["first_at"]:
+            _conflict_state["first_at"] = now
+            log.warning(
+                "نسخة سابقة ما زالت متصلة بالتوكن — ننتظر إغلاقها ونعيد "
+                "المحاولة تلقائيا (لا يلزم أي إجراء)."
             )
-        elif n == 5 and not _conflict_state["notified"]:
+        _conflict_state["count"] += 1
+        elapsed = now - _conflict_state["first_at"]
+        if elapsed >= _CONFLICT_ALERT_AFTER and not _conflict_state["notified"]:
             _conflict_state["notified"] = True
-            log.error("⛔ تعارض مستمر (%s محاولات) — البوت لا يستقبل أي رسالة.", n)
-            _notify_admins_conflict()
+            log.error(
+                "تعارض مستمر منذ %.0f دقيقة — هناك نسخة أخرى تعمل بنفس التوكن "
+                "ولا تُغلق. أوقفها (Railway أو تشغيل محلي).",
+                elapsed / 60,
+            )
+            # الدالة المتزامنة لا تستطيع await؛ نجدول التنبيه على حلقة التطبيق.
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            result = _notify_admins_conflict()
+            if asyncio.iscoroutine(result):
+                if loop is not None:
+                    loop.create_task(result)
+                else:
+                    result.close()
         return
+
+    # أي خطأ آخر يعني أن الاتصال يعمل من جديد: نُصفّر عدّاد التعارض.
+    if _conflict_state["first_at"]:
+        _conflict_state["count"] = 0
+        _conflict_state["notified"] = False
+        _conflict_state["first_at"] = 0.0
 
     if isinstance(error, NetworkError):
         log.warning("⚠️ خطأ شبكة مؤقت: %s", error)
@@ -199,6 +227,24 @@ async def post_init(app: Application) -> None:
         _db_state["error"] = str(e)[:300]
         log.error("تعذّر تهيئة قاعدة البيانات: %s", e)
 
+    # ---------- نسخة واحدة فقط تستقبل الرسائل ----------
+    # القفل يمنع تعارض Telegram عند إعادة النشر أو تشغيل نسخة محلية،
+    # والمهلة تسمح للنسخة السابقة بإغلاق آخر long-poll قبل أول getUpdates.
+    if settings.BOT_MODE == "polling":
+        try:
+            from core.instance_lock import acquire_polling_lock
+
+            await acquire_polling_lock()
+        except Exception as e:  # noqa: BLE001
+            log.warning("تعذّر تطبيق قفل النسخة (%s) — سنتابعة.", e)
+        delay = max(0, int(settings.POLL_START_DELAY_SECONDS))
+        if delay:
+            log.info(
+                "مهلة %ss قبل استقبال الرسائل (لإغلاق اتصال النسخة السابقة بأمان).",
+                delay,
+            )
+            await asyncio.sleep(delay)
+
     # زرع البيانات الأساسية إن كانت القاعدة فارغة (قاعدة Railway الجديدة)
     try:
         from pipeline.seed import ensure_seeded
@@ -269,6 +315,13 @@ async def post_shutdown(app: Application) -> None:
     from pipeline import jobs
 
     await jobs.stop_worker()
+    # تحرير قفل النسخة قبل إغلاق المحرّك (حتى تبدأ النسخة الجديدة فورا).
+    try:
+        from core.instance_lock import release_polling_lock
+
+        await release_polling_lock()
+    except Exception as e:  # noqa: BLE001
+        log.debug("تعذّر تحرير قفل النسخة: %s", e)
     # إغلاق المحرّك داخل حلقة التطبيق نفسها
     try:
         await close_db()
@@ -292,6 +345,16 @@ class _ConflictAwareUpdater(Updater):
 
 def build_application() -> None | Application:
     """يبني التطبيق. في وضع Webhook لا يُنشأ محدّث polling إطلاقا."""
+    # محادثاتنا تمزج أزرار callback بخطوات نصية (تصميم مقصود: نطلب إدخالا
+    # بعد الضغط على زر). ملاحظة PTB عن per_message معلوماتية وليست خطأ،
+    # وإبقاؤها يملأ سجلات الإقلاع بتحذيرات مضللة.
+    from telegram.warnings import PTBUserWarning
+
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*per_message=.*CallbackQueryHandler.*",
+        category=PTBUserWarning,
+    )
     if settings.BOT_MODE == "webhook" and settings.WEBHOOK_URL:
         app = (
             ApplicationBuilder()
@@ -931,12 +994,14 @@ def _run() -> None:
                 webhook_url=settings.WEBHOOK_URL,
                 secret_token=settings.WEBHOOK_SECRET or None,
                 allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
+                # لا نُسقط رسائل المستخدمين أثناء إعادة النشر القصيرة.
+                drop_pending_updates=False,
             )
         else:
             log.info("تشغيل البوت بوضع Polling...")
             app.run_polling(
-                allowed_updates=Update.ALL_TYPES, drop_pending_updates=True
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
             )
     finally:
         # إغلاق القاعدة يتم في post_shutdown (داخل حلقة التطبيق)
