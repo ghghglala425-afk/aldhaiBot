@@ -164,7 +164,11 @@ def _clean_text_list(raw: object) -> list[str]:
         raw = [raw]
     if not isinstance(raw, list):
         return []
-    return [str(x).strip() for x in raw if str(x).strip()]
+    return [
+        item.strip()
+        for item in raw
+        if isinstance(item, str) and item.strip()
+    ]
 
 
 def _merge_atlas(base: GeneratedCode, data: dict) -> GeneratedCode:
