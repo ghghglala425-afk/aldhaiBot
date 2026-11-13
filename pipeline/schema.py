@@ -121,30 +121,117 @@ def _mark_correct(items: list, correct: Any) -> None:
             return
 
 
+def _alias(data: dict, target: str, keys: tuple[str, ...]) -> str:
+    """قيمة أول مفتاح بديل غير فارغ (مفيد لاختلاف تسمية النماذج)."""
+    for key in keys:
+        value = data.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
 class AnatomyLine(BaseModel):
     """سطر من تشريح الكود."""
 
     line: int = 0
     code: str = ""
-    explain: str = Field(min_length=2)
+    # لا نفرض حدا أدنى: سطر بلا شرح يُستبعد في طبقة الإثراء بدل إسقاط الكود كله.
+    explain: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            text = value.strip()
+            return {"code": text, "explain": text}
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if not str(data.get("explain") or "").strip():
+            data["explain"] = _alias(
+                data,
+                "explain",
+                ("explanation", "desc", "description", "text", "note", "comment",
+                 "details", "summary", "meaning", "purpose", "role",
+                 "شرح", "الشرح", "تفسير", "توضيح", "المعنى", "الغرض"),
+            )
+        if not str(data.get("code") or "").strip():
+            data["code"] = _alias(data, "code", ("snippet", "source", "content", "الكود"))
+        if not data.get("line"):
+            raw_line = _alias(data, "line", ("line_no", "line_number", "number", "رقم"))
+            if raw_line.isdigit():
+                data["line"] = int(raw_line)
+        return data
 
 
 class CodeUsage(BaseModel):
     """استخدام واحد من استخدامات الكود/الدالة."""
 
-    name: str = Field(min_length=2)
+    name: str = ""
     signature: str = ""
-    description: str = Field(min_length=3)
-    example: str = Field(min_length=1)
+    description: str = ""
+    example: str = ""
     output: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return {"name": value.strip(), "description": value.strip()}
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if not str(data.get("name") or "").strip():
+            data["name"] = _alias(
+                data, "name",
+                ("title", "method", "function", "api", "usage", "الاسم", "الاستخدام"),
+            )
+        if not str(data.get("signature") or "").strip():
+            data["signature"] = _alias(data, "signature", ("syntax", "form", "صيغة", "التوقيع"))
+        if not str(data.get("description") or "").strip():
+            data["description"] = _alias(
+                data, "description", ("desc", "details", "explain", "explanation", "وصف", "الوصف")
+            )
+        if not str(data.get("example") or "").strip():
+            data["example"] = _alias(
+                data, "example", ("code", "snippet", "sample", "usage_example", "مثال")
+            )
+        if not str(data.get("output") or "").strip():
+            data["output"] = _alias(
+                data, "output", ("result", "returns", "expected_output", "المخرج", "النتيجة")
+            )
+        return data
 
 
 class ParamInfo(BaseModel):
-    name: str = Field(min_length=1)
+    name: str = ""
     type: str = ""
     description: str = ""
     default: str = ""
     required: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return {"name": value.strip()}
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if not str(data.get("name") or "").strip():
+            data["name"] = _alias(
+                data, "name",
+                ("param", "parameter", "arg", "argument", "key", "الاسم", "المعامل"),
+            )
+        if not str(data.get("type") or "").strip():
+            data["type"] = _alias(data, "type", ("datatype", "data_type", "النوع"))
+        if not str(data.get("description") or "").strip():
+            data["description"] = _alias(
+                data, "description", ("desc", "explain", "explanation", "وصف", "الوصف")
+            )
+        if "required" in data:
+            data["required"] = _as_bool(data["required"])
+        return data
 
 
 class GeneratedCode(BaseModel):
