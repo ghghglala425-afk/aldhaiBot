@@ -200,6 +200,10 @@ GET https://<your-service>.up.railway.app/health
 | `DIAG_TOKEN` | `‏<سلسلة عشوائية طويلة>` | حماية `/diag` — فارغ = معطّل في الإنتاج |
 | `DB_POOL_SIZE` | `5` | اتصالات دائمة لكل خدمة |
 | `DB_MAX_OVERFLOW` | `5` | اتصال إضافي عند الذروة |
+| `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | `20` | مهلة إغلاق النسخة القديمة قبل إزالتها عند النشر |
+| `POLL_START_DELAY_SECONDS` | `12` | مهلة قبل أول `getUpdates` كي تُغلق النسخة السابقة اتصالها |
+| `POLLING_LOCK_ENABLED` | `1` | قفل Postgres يضمن نسخة واحدة فقط تستقبل الرسائل |
+| `POLLING_LOCK_WAIT_SECONDS` | `-1` | انتظار بلا حد حتى تُغلق النسخة الأخرى (`-1`) |
 
 > 🔐 **كل الأسرار تُخزَّن مشفّرة** في Railway. لا تضعها في الكود ولا في GitHub.
 
@@ -229,7 +233,8 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 | **Restart Policy** | `On Failure` · Max Retries `10` |
 | **Num Replicas** | `1` ⚠️ **لا تزيدها** — نسختان = تعارض Telegram |
 
-> 🔎 `railway.json` في جذر المستودع يوفّر هذه الإعدادات تلقائيا.
+> 🔎 الحاوية تعمل افتراضيا بالأمر `python -m app.bot` (من `Dockerfile`)، فلا حاجة
+> لملف `railway.json`: هذه الحقول تُضبط مرة واحدة في لوحة Railway وتبقى محفوظة.
 >
 > ℹ️ **لماذا خادم صحي؟** البوت يعمل بوضع Polling فلا يستمع على أي منفذ.
 > بدون خادم `/health` صغير (مدمج في `app/bot.py`) ستفتح Railway اتصالاً
@@ -241,8 +246,7 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 1. في المشروع: **+ New** → **Service** → اختر نفس المستودع.
 2. تبويب **Settings**:
-   - **Config Path** (أو *Railway Config*): `railway.api.json`
-   - أو **Start Command** يدويا:
+   - **Start Command**:
      `sh -c 'exec uvicorn api.main:app --host 0.0.0.0 --port $PORT'`
 3. **Variables**: انسخ نفس المتغيرات أعلاه (نفس الـ `DATABASE_URL`).
 4. عند النشر، سيعطيك Railway نطاقا مثل `cyber-academy-api.up.railway.app`.

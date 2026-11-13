@@ -138,29 +138,20 @@ class TestDockerignore:
 
 
 class TestRailwayConfigs:
-    def test_railway_json_exists_and_is_valid(self) -> None:
-        import json
+    """لا Config as Code: الإعدادات في لوحة Railway والـ Dockerfile."""
 
-        data = json.loads((ROOT / "railway.json").read_text(encoding="utf-8"))
-        assert data["build"]["builder"] == "DOCKERFILE"
-        assert data["deploy"]["healthcheckPath"] == "/health"
+    def test_no_config_as_code_files(self) -> None:
+        for name in ("railway.json", "railway.api.json", "railway.toml"):
+            assert not (ROOT / name).exists(), (
+                f"{name} عاد للمستودع — Railway يفضّل Infrastructure as Code الآن"
+            )
 
-    def test_railway_api_json_uses_api_role(self) -> None:
-        import json
+    def test_healthcheck_path_is_documented(self) -> None:
+        doc = (ROOT / "DEPLOY_RAILWAY.md").read_text(encoding="utf-8")
+        assert "Healthcheck Path" in doc
+        assert "/health" in doc
 
-        data = json.loads((ROOT / "railway.api.json").read_text(encoding="utf-8"))
-        assert "uvicorn api.main:app" in data["deploy"]["startCommand"]
-
-    def test_healthcheck_path_is_health(self) -> None:
-        import json
-
-        for name in ("railway.json", "railway.api.json"):
-            data = json.loads((ROOT / name).read_text(encoding="utf-8"))
-            assert data["deploy"]["healthcheckPath"] == "/health"
-
-    def test_single_replica(self) -> None:
+    def test_single_replica_is_documented(self) -> None:
         """نسختان في Polling = تعارض تيليجرام."""
-        import json
-
-        data = json.loads((ROOT / "railway.json").read_text(encoding="utf-8"))
-        assert data["deploy"]["numReplicas"] == 1
+        doc = (ROOT / "DEPLOY_RAILWAY.md").read_text(encoding="utf-8")
+        assert "Num Replicas" in doc

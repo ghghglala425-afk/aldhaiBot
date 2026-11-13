@@ -28,9 +28,12 @@ class TestNoBom:
             return False
         return path.read_bytes().startswith(self.BOM)
 
-    def test_railway_json_has_no_bom(self) -> None:
-        for name in ("railway.json", "railway.api.json"):
-            assert not self._has_bom(name), f"{name} starts with a BOM - Railway cannot parse it"
+    def test_no_config_as_code_files(self) -> None:
+        """لا نستخدم Config as Code (مهجور) — إعدادات الخدمة في لوحة Railway."""
+        for name in ("railway.json", "railway.api.json", "railway.toml"):
+            assert not (ROOT / name).exists(), (
+                f"{name} عاد للمستودع — الإعدادات تُضبط في لوحة Railway وDockerfile"
+            )
 
     def test_compose_yml_has_no_bom(self) -> None:
         for name in ("docker-compose.yml", "docker-compose.prod.yml"):
@@ -51,10 +54,11 @@ class TestNoBom:
             )
 
     def test_json_files_parse_without_bom(self) -> None:
+        """أي ملف JSON باقٍ في الجذر يجب أن يُقرأ بلا BOM."""
         import json
 
-        for name in ("railway.json", "railway.api.json"):
-            with (ROOT / name).open(encoding="utf-8") as fh:
+        for path in sorted(ROOT.glob("*.json")):
+            with path.open(encoding="utf-8") as fh:
                 json.load(fh)
 
 
@@ -149,9 +153,11 @@ class TestPortHandling:
 
     def test_no_hardcoded_port_8000_in_commands(self) -> None:
         """أوامر التشغيل يجب أن تستعمل $PORT لا 8000."""
-        for name in ("docker-compose.prod.yml", "railway.json", "railway.api.json"):
-            text = _read(name)
-            for line in text.splitlines():
+        for name in ("docker-compose.prod.yml", "scripts/entrypoint.sh"):
+            path = ROOT / name
+            if not path.is_file():
+                continue
+            for line in _read(name).splitlines():
                 if "command" in line or "startCommand" in line:
                     assert "--port 8000" not in line, f"{name}: {line.strip()}"
 
@@ -238,12 +244,12 @@ class TestEntrypointRoles:
             cmd = [ln for ln in _read(name).splitlines() if ln.strip().startswith("CMD")]
             assert cmd and "python -m app.bot" in cmd[-1], f"{name} must start the bot"
 
-    def test_api_config_uses_uvicorn(self) -> None:
-        assert "uvicorn api.main:app" in _read("railway.api.json")
+    def test_api_role_is_documented_in_deploy_guide(self) -> None:
+        """خدمة API اختيارية: توثيقها في الدليل بدل ملف Config as Code."""
+        doc = _read("DEPLOY_RAILWAY.md")
+        assert "uvicorn api.main:app" in doc
 
-    def test_railway_config_has_no_start_command(self) -> None:
-        """لا نحدد startCommand — يتولى Dockerfile الأمر (أقل نقاط فشل)."""
-        import json
-
-        data = json.loads(_read("railway.json"))
-        assert "startCommand" not in data["deploy"]
+    def test_no_config_as_code_start_command(self) -> None:
+        """لا نحدد startCommand في أي ملف — يتولى Dockerfile الأمر."""
+        for name in ("railway.json", "railway.api.json", "railway.toml"):
+            assert not (ROOT / name).exists(), f"{name} يجب أن يبقى محذوفا"

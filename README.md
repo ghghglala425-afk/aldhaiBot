@@ -77,8 +77,9 @@
 | Free | $0 | $1/شهر (الخدمة تتوقف بعد ~6 أيام) |
 | **Hobby** | **$5/شهر** | $5 مشمول — الخيار المستقر |
 
-> `railway.json` و `railway.api.json` جاهزان، و `core/config.py` يضيف `+asyncpg`
-> تلقائيا إلى `DATABASE_URL` الذي يحقنه Railway.
+> الإعدادات (Start Command، Healthcheck، Replicas) تُضبط في لوحة Railway نفسها —
+> تفاصيلها في [DEPLOY_RAILWAY.md](DEPLOY_RAILWAY.md). و `core/config.py` يضيف
+> `+asyncpg` تلقائيا إلى `DATABASE_URL` الذي يحقنه Railway.
 
 **النشر على خادمك الخاص (Oracle/GCP/VPS):** [DEPLOY_ORACLE.md](DEPLOY_ORACLE.md)
 
