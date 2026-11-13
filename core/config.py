@@ -238,6 +238,10 @@ class Settings(BaseSettings):
     GEN_WORKER_CONCURRENCY: int = 4
     GEN_QUEUE_POLL: int = 5
     GEN_JOB_MAX_ATTEMPTS: int = 3
+    # بعد استنفاد المحاولات القصيرة: فترة تهدئة قبل إعادة الإدراج، وسقف كلي
+    # حتى لا تبقى مهمة معطوبة تدور إلى الأبد (أو تُحجب بعد عطل حصة مؤقت).
+    GEN_JOB_RETRY_COOLDOWN_MINUTES: int = 45
+    GEN_JOB_MAX_TOTAL_ATTEMPTS: int = 30
     GEN_LESSON_TIMEOUT: int = 1800
     # سقف مهام الطابور (queued+running). 0 = بلا سقف. يحمي الحصة المجانية من الإغراق.
     GEN_QUEUE_MAX: int = 400

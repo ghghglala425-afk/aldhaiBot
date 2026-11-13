@@ -73,6 +73,36 @@ def _age_seconds(ts: dt.datetime | None) -> float:
     return (_now() - ts).total_seconds()
 
 
+# أخطاء الحصة/الازدحام عطل مؤقت لا خطأ محتوى: لا تُستهلك بها محاولات المهمة،
+# وإلا بقيت الدروس محجوبة نهائيا بعد أول نفاد حصة.
+_QUOTA_HINTS = (
+    "نفدت حصته",
+    "تجاوز الحد",
+    "نفدت الحصة",
+    "quota",
+    "rate limit",
+    "resource_exhausted",
+    "too many requests",
+    "429",
+)
+
+
+def _is_quota_error(text: str) -> bool:
+    value = (text or "").lower()
+    return any(hint in value for hint in _QUOTA_HINTS)
+
+
+def _apply_job_result(job: GenerationJob, res: dict) -> None:
+    """يثبّت نتيجة المهمة، ولا يحتسب أخطاء الحصة من المحاولات."""
+    ok = bool(res.get("ok"))
+    job.finished_at = _now()
+    job.updated_at = _now()
+    job.status = "done" if ok else "failed"
+    job.error = None if ok else (res.get("error") or "خطأ")
+    if not ok and _is_quota_error(job.error):
+        job.attempts = max(0, int(job.attempts or 1) - 1)
+
+
 # ---------------------------------------------------------------------
 #  الإدراج
 # ---------------------------------------------------------------------
@@ -103,8 +133,16 @@ async def enqueue(
     if existing:
         if existing.status in {"queued", "running"}:
             return None
-        if existing.status == "failed" and existing.attempts >= settings.GEN_JOB_MAX_ATTEMPTS:
-            return None
+        if existing.status == "failed":
+            attempts = int(existing.attempts or 0)
+            # سقف كلي: مهمة معطوبة فعلا لا تدور إلى الأبد.
+            if attempts >= settings.GEN_JOB_MAX_TOTAL_ATTEMPTS:
+                return None
+            # بعد استنفاد المحاولات القصيرة: انتظر فترة التهدئة (عطل حصة/شبكة).
+            if attempts >= settings.GEN_JOB_MAX_ATTEMPTS:
+                cooldown = max(0, settings.GEN_JOB_RETRY_COOLDOWN_MINUTES) * 60
+                if _age_seconds(existing.finished_at) < cooldown:
+                    return None
         existing.status = "queued"
         existing.error = None
         existing.updated_at = _now()
@@ -348,10 +386,7 @@ async def _claim_next(session) -> Optional[GenerationJob]:
     async with _claim_lock:
         job = await session.scalar(
             select(GenerationJob)
-            .where(
-                GenerationJob.status == "queued",
-                GenerationJob.attempts < settings.GEN_JOB_MAX_ATTEMPTS,
-            )
+            .where(GenerationJob.status == "queued")
             .order_by(GenerationJob.priority.desc(), GenerationJob.id.asc())
             .limit(1)
         )
@@ -562,10 +597,7 @@ async def _generate_lesson_now_inner(
 
             job = await session.get(GenerationJob, job_id)
             if job:
-                job.finished_at = _now()
-                job.updated_at = _now()
-                job.status = "done" if res.get("ok") else "failed"
-                job.error = None if res.get("ok") else (res.get("error") or "خطأ")
+                _apply_job_result(job, res)
                 await session.commit()
             if res.get("ok") and fast:
                 _schedule_enrichment(lesson_id)
@@ -641,10 +673,7 @@ async def process_job(job_id: int) -> dict:
 
         job = await session.get(GenerationJob, job_id)
         if job:
-            job.finished_at = _now()
-            job.updated_at = _now()
-            job.status = "done" if res.get("ok") else "failed"
-            job.error = None if res.get("ok") else (res.get("error") or "خطأ")
+            _apply_job_result(job, res)
             await session.commit()
         log.info("مهمة #%s (%s) → %s", job_id, job.kind if job else "?", res.get("ok"))
         return res
@@ -687,14 +716,15 @@ async def worker_loop(stop_event: asyncio.Event | None = None) -> None:
             t = asyncio.create_task(process_job(job.id))
             tasks.add(t)
             t.add_done_callback(tasks.discard)
-            failures = 0
-            # تراجع أسّي عند تكرار فشل الحصص (429) حتى لا نحرق اليوم كله
+            # تراجع أسّي عند تكرار فشل الحصص (429) حتى لا نحرق اليوم كله.
             failed = await _recent_failures()
             if failed:
-                failures += 1
+                failures = min(failures + 1, 6)
                 delay = min(60 * (2 ** (failures - 1)), 1800)
                 log.warning("فشل متكرر (%s) — إيقاف مؤقت %ss", failed, delay)
                 await asyncio.sleep(delay)
+            else:
+                failures = 0
     finally:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)

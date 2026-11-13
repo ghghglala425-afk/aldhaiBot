@@ -46,10 +46,16 @@ ERRORS: list[str] = []
 WARNINGS: list[str] = []
 INFO: list[str] = []
 
-# أنماط تشير إلى نص بديل أو ترميز تالف
+# أنماط تشير إلى نص بديل فعلي، لا إلى مصطلح تقني مشروع مثل HTML `placeholder`
+# أو قيمة JavaScript `undefined` داخل شرح. العلامات الحقيقية تظهر بين قوسين
+# أو وحدها في سطر/حقل، أو ككلمات TODO/FIXME الصريحة.
 PLACEHOLDERS = re.compile(
-    r"(?i)\b(TODO|FIXME|lorem ipsum|placeholder|قريبا|سيتم إضافة|"
-    r"undefined|None\b\s*$)"
+    r"[(\[]\s*(?:placeholder|todo|fixme|undefined|قريبا|قريباً)\s*[)\]]"
+    r"|\b(?:TODO|FIXME)\b"
+    r"|lorem ipsum"
+    r"|سيتم إضافة"
+    r"|^\s*(?:undefined|placeholder|todo|fixme|قريبا|قريباً)\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 MOJIBAKE = re.compile(r"(Ã.|Â.|Ø.|Ù.|â€™|â€œ|â€\x9d|ï»¿)")
 

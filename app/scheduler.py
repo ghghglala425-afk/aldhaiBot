@@ -33,27 +33,32 @@ async def _send_daily(context: ContextTypes.DEFAULT_TYPE) -> None:
     sent = 0
     for tg_id in ids:
         try:
+            # كل شيء داخل الجلسة: استخدامها بعد الإغلاق يفتح اتصالا لا يُغلق
+            # (تحذير garbage collector عن connections غير معادة للمجمّع).
             async with SessionLocal() as s:
                 user = await get_user_by_telegram(s, tg_id)
                 if not user:
                     continue
                 lesson = await todays_daily(s, user)
-            if not lesson:
-                continue
-            day = await lesson_day(s, lesson)
+                if not lesson:
+                    continue
+                day = await lesson_day(s, lesson)
+                lesson_id = lesson.id
+                lesson_title = html.escape(lesson.title)
+                lesson_summary = html.escape((lesson.summary or "")[:180])
             head = "🎯 <b>درس اليوم</b>" + (f" — اليوم {day}" if day else "")
             await context.bot.send_message(
                 tg_id,
-                f"{head}\n\n📖 <b>{html.escape(lesson.title)}</b>\n"
-                f"{html.escape((lesson.summary or '')[:180])}\n\n"
+                f"{head}\n\n📖 <b>{lesson_title}</b>\n"
+                f"{lesson_summary}\n\n"
                 f"<i>اجتز الاختبار بـ {settings.QUIZ_PASS_PERCENT}% لفتح التالي — "
                 "ويمكنك دراسة أكثر من 10 دروس اليوم.</i>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(
                     [
-                        [InlineKeyboardButton("▶️ افتح الدرس", callback_data=f"lesson:{lesson.id}")],
+                        [InlineKeyboardButton("▶️ افتح الدرس", callback_data=f"lesson:{lesson_id}")],
                         [
-                            InlineKeyboardButton("🧠 الاختبار", callback_data=f"qz_start:{lesson.id}"),
+                            InlineKeyboardButton("🧠 الاختبار", callback_data=f"qz_start:{lesson_id}"),
                             InlineKeyboardButton("📚 خطة دروسي", callback_data="dplan:0"),
                         ],
                     ]
